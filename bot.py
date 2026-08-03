@@ -62,7 +62,7 @@ CUSTOM_EMOJI_MAP = {
     '⚡1': '6100277122935295595', '⚡2': '6100472578307002133',
     '⚡3': '6102404476071579522', '⚡4': '6100671388048166850',
     '⚡5': '6100278127957643014',
-    '🥵': '6307832826263768178',  # ADMIN-ONLY – may fallback
+    '🥵': '6307832826263768178',  # ADMIN-ONLY
 }
 
 def get_custom_entities(text):
@@ -70,15 +70,18 @@ def get_custom_entities(text):
     offset = 0
     i = 0
     while i < len(text):
-        # Check for multi-character emojis
-        if i + 1 < len(text) and text[i:i+2] in ['☑️', '✔️', '⚡1', '⚡2', '⚡3', '⚡4', '⚡5']:
+        ch = text[i]
+        if i + 1 < len(text) and text[i:i+2] == '☑️':
+            ch = '☑️'
+            utf16_len = 2
+        elif i + 1 < len(text) and text[i:i+2] == '✔️':
+            ch = '✔️'
+            utf16_len = 2
+        elif i + 1 < len(text) and text[i:i+2] in ['⚡1', '⚡2', '⚡3', '⚡4', '⚡5']:
             ch = text[i:i+2]
             utf16_len = 2
-            i += 2
         else:
-            ch = text[i]
             utf16_len = len(ch.encode('utf-16-le')) // 2
-            i += 1
         
         if ch in CUSTOM_EMOJI_MAP:
             entities.append(MessageEntity(
@@ -88,6 +91,7 @@ def get_custom_entities(text):
                 custom_emoji_id=CUSTOM_EMOJI_MAP[ch]
             ))
         offset += utf16_len
+        i += 1 if utf16_len == 1 else 2
     return entities
 
 async def send_custom(chat_id, text, context, reply_markup=None):
@@ -101,7 +105,7 @@ async def send_custom(chat_id, text, context, reply_markup=None):
             entities=entities if entities else None
         )
     except Exception as e:
-        # Fallback: send without custom entities (prevents crash)
+        # Fallback: send without custom entities
         print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
         await context.bot.send_message(
             chat_id=chat_id,
@@ -572,22 +576,31 @@ sessions = {}
 bulk_tasks = {}
 
 # ============================================================
-# ✅ CPM1 TOOL FUNCTIONS
+# ✅ CPM1 TOOL FUNCTIONS (INTEGRATED)
 # ============================================================
 ALL_CARS_DIR = 'all-cars'
 
 def load_all_cars():
     cars = []
-    if not os.path.exists(ALL_CARS_DIR):
-        os.makedirs(ALL_CARS_DIR)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cars_dir = os.path.join(base_dir, ALL_CARS_DIR)
+    
+    if not os.path.exists(cars_dir):
+        print(f"⚠️ all-cars folder not found at {cars_dir}")
         return cars
-    for filepath in sorted(glob.glob(f'{ALL_CARS_DIR}/*.json')):
+    
+    files = glob.glob(f'{cars_dir}/*.json')
+    print(f"📁 Found {len(files)} JSON files in {cars_dir}")
+    
+    for filepath in sorted(files):
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 car = json.load(f)
                 cars.append(car)
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Error loading {filepath}: {e}")
+    
+    print(f"✅ Loaded {len(cars)} car files")
     return cars
 
 async def login_async(session, e, p):
@@ -1970,7 +1983,7 @@ async def claimagain_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
         return
     
-    users = db_get("giveaway/users") or {}
+    users = db_get("users") or {}
     if not users:
         await reply_custom(update, "📭 No users to notify.", context)
         return
@@ -2004,7 +2017,7 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
         await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
         return
     
-    users = db_get("giveaway/users") or {}
+    users = db_get("users") or {}
     if not users:
         await reply_custom(update, "📭 No users to notify.", context)
         return
@@ -2038,6 +2051,25 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
 # ✅ RUN BOT
 # ============================================================
 def run_bot():
+    # ✅ Auto-extract all-cars.zip if exists
+    if os.path.exists('all-cars.zip'):
+        print("📦 Extracting all-cars.zip...")
+        try:
+            with zipfile.ZipFile('all-cars.zip', 'r') as zip_ref:
+                zip_ref.extractall('.')
+            print("✅ all-cars.zip extracted successfully!")
+            os.remove('all-cars.zip')
+            print("🗑️ Removed all-cars.zip")
+        except Exception as e:
+            print(f"⚠️ Failed to extract: {e}")
+    
+    # Log all-cars folder
+    if os.path.exists('all-cars'):
+        files = os.listdir('all-cars')
+        print(f"📁 all-cars folder has {len(files)} files")
+    else:
+        print("⚠️ all-cars folder not found!")
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -2061,7 +2093,6 @@ def run_bot():
     app.add_handler(CommandHandler("continue", continue_command))
     app.add_handler(CommandHandler("claimagain", claimagain_command))
     app.add_handler(CommandHandler("undermaintinance", undermaintinance_command))
-    app.add_handler(CommandHandler("cpm1tool", lambda u,c: start(u,c)))  # Redirect to start for admin menu
 
     app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(confirm_|decline_)"))
     app.add_handler(CallbackQueryHandler(bulk_game_selection_handler, pattern="^bulk_game_(cpm1|cpm2)$"))
@@ -2072,7 +2103,7 @@ def run_bot():
 
     print("="*50)
     print("🤖 MARK CPM1/2 CHANGER BOT - COMPLETE")
-    print("📌 All features integrated: Bulk, CPM1 Tool, Admin")
+    print("📌 All features: Single Change, Bulk Change, CPM1 Tool, Admin Panel")
     print("📌 Custom emojis with fallback")
     print("📌 Background bulk processing with /continue")
     print("📌 Admin: /addtrial, /removetrial, /triallist, /claimagain, /undermaintinance")
