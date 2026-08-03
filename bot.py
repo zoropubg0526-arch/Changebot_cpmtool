@@ -8,7 +8,7 @@ from telegram.error import NetworkError, TimedOut, BadRequest
 from flask import Flask
 
 # ============================================================
-# ✅ FLASK APP
+# ✅ FLASK APP (FOR PORT BINDING)
 # ============================================================
 app_flask = Flask(__name__)
 
@@ -402,180 +402,78 @@ def had_key(user_id):
     data = db_get(f"keys/{user_id}")
     return data is not None
 
-# ============================================================
-# ✅ TRIAL SYSTEM
-# ============================================================
-def add_trial(user_id, duration_str):
-    try:
-        parts = duration_str.upper().split()
-        if len(parts) != 2:
-            return False, "Invalid format. Use: '5 MINUTES', '2 HOURS', '3 DAYS'"
-        amount = int(parts[0])
-        unit = parts[1]
-        if unit in ["MINUTE", "MINUTES"]:
-            delta = timedelta(minutes=amount)
-        elif unit in ["HOUR", "HOURS"]:
-            delta = timedelta(hours=amount)
-        elif unit in ["DAY", "DAYS"]:
-            delta = timedelta(days=amount)
-        else:
-            return False, "Invalid unit."
-        expiry = datetime.now(timezone.utc) + delta
-        db_put(f"trials/{user_id}", {"expiry": expiry.isoformat()})
-        return True, f"Trial until {expiry.strftime('%Y-%m-%d %H:%M:%S UTC')}"
-    except Exception as e:
-        return False, str(e)
+def has_trial(user_id):
+    trial = db_get(f"trials/{user_id}")
+    if trial:
+        expiry_str = trial.get("expiry")
+        if expiry_str:
+            expiry = datetime.fromisoformat(expiry_str)
+            if datetime.now(timezone.utc) < expiry:
+                return True
+    return False
 
-def remove_trial(user_id):
-    db_delete(f"trials/{user_id}")
+def has_full_access(user_id):
+    """Check if user has full access (not trial, not 1-week key)"""
+    # Admin always has full access
+    if user_id == ADMIN_ID:
+        return True
+    
+    # Trial users cannot use CPM1 Tool
+    if has_trial(user_id):
+        return False
+    
+    # Check if user has a key
+    key_data = db_get(f"keys/{user_id}")
+    if not key_data:
+        return False
+    
+    tier = key_data.get("tier", "")
+    if tier == "1week":
+        return False
+    
+    # Check if key is expired
+    expiry_str = key_data.get("expiry")
+    if expiry_str:
+        expiry = datetime.fromisoformat(expiry_str)
+        if datetime.now(timezone.utc) >= expiry:
+            return False
+    
     return True
 
-def get_trial(user_id):
-    data = db_get(f"trials/{user_id}")
-    if not data: return None
-    expiry = datetime.fromisoformat(data["expiry"])
-    if datetime.now(timezone.utc) >= expiry:
-        db_delete(f"trials/{user_id}")
-        return None
-    return expiry
-
-def has_trial(user_id):
-    return get_trial(user_id) is not None
-
-def has_access(user_id):
-    if get_key(user_id): return True
-    if has_trial(user_id): return True
-    return False
+# ============================================================
+# ✅ CPM1 TOOL – INSTRUCTION MESSAGE
+# ============================================================
+CPM1_INSTRUCTION = (
+    "🚘 **CPM1 TOOL – UNLOCK ALL CARS & INJECT** 🚘\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "⚡ **Unlock All Cars**\n"
+    "📌 This feature unlocks **ALL** cars from your `all-cars/` folder into your account.\n"
+    "📌 **Requirements:**\n"
+    "  ✅ Your account must have **at least 1 car** in the garage (blueprint).\n"
+    "  ✅ You need **enough in-game money** (approx. 100 per car).\n"
+    "  ✅ You must have **opened the account in the game** at least once.\n"
+    "  ✅ The account must have **available world sale slots**.\n\n"
+    "🔥 **How it works:**\n"
+    "  • The bot logs into your account.\n"
+    "  • It takes your best car as a blueprint.\n"
+    "  • It scans the world sale for available slots.\n"
+    "  • It buys cars using your in-game money.\n"
+    "  • You'll receive progress updates every 20 cars.\n\n"
+    "💉 **Inject Car**\n"
+    "📌 Injects a **specific car ID** into your account.\n"
+    "📌 **Requirements:**\n"
+    "  ✅ Car ID must exist in the game.\n"
+    "  ✅ You need an available world sale slot.\n"
+    "  ✅ Your account must have at least 1 car as blueprint.\n\n"
+    "⚠️ **Important:**\n"
+    "  • This tool is **ONLY for full-access users** (not trial, not 1-week).\n"
+    "  • Do not spam the buttons – the process runs in the background.\n"
+    "  • If you encounter errors, check your account first.\n\n"
+    "👇 **Select an action below:**"
+)
 
 # ============================================================
-# ✅ NOTIFICATION
-# ============================================================
-async def send_activation_notification(context, user_id, activation_type, plan_or_duration=""):
-    if activation_type == "KEY":
-        msg = (
-            f"🔥 KEY ACTIVATED – LET'S GO! 🔥\n\n"
-            f"Your {plan_or_duration.upper()} key is now ACTIVE!\n"
-            "You're all set to dominate CPM1/2 with this beast of a tool.\n\n"
-            "⚡ What you can do:\n"
-            "✅ Change emails & passwords instantly\n"
-            "✅ Bulk change thousands of accounts\n"
-            "✅ 24/7 access – no limits\n\n"
-            "👉 Use /start now and start cooking! 💪\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 MARK CPM1/2 CHANGER TOOL\n"
-            "💸 Powered by @Maarkryan"
-        )
-    else:
-        msg = (
-            f"🎁 TRIAL ACTIVATED – TEST THE BEAST! 🎁\n\n"
-            f"Your {plan_or_duration} trial is now ACTIVE!\n"
-            "Experience the power of this changer tool – no strings attached.\n\n"
-            "⚡ What you can test:\n"
-            "✅ Change emails & passwords\n"
-            "✅ Bulk change (limited to 1000 per batch)\n"
-            "✅ Real-time processing\n\n"
-            f"⏳ Your trial ends after: {plan_or_duration}\n"
-            "👉 Use /start now and see the magic! 🚀\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📌 MARK CPM1/2 CHANGER TOOL\n"
-            "💸 Buy full access: @Maarkryan"
-        )
-    try:
-        await send_custom(chat_id=user_id, text=msg, context=context)
-    except Exception as e:
-        print(f"⚠️ Could not send notification: {e}")
-
-# ============================================================
-# ✅ SYNC AUTH
-# ============================================================
-def sign_in_game(email, password, game="cpm2"):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
-    try:
-        r = requests.post(url, json={"email":email,"password":password,"returnSecureToken":True}, timeout=60)
-        if r.status_code == 200:
-            return r.json()["idToken"]
-    except:
-        pass
-    return None
-
-def change_email(token, new_email, game="cpm2"):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
-    try:
-        r = requests.post(url, json={"idToken":token,"email":new_email,"returnSecureToken":True}, timeout=60)
-        return r.status_code == 200
-    except:
-        return False
-
-def change_password(token, new_password, game="cpm2"):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
-    try:
-        r = requests.post(url, json={"idToken":token,"password":new_password,"returnSecureToken":True}, timeout=60)
-        return r.status_code == 200
-    except:
-        return False
-
-# ============================================================
-# ✅ ASYNC AUTH
-# ============================================================
-async def async_sign_in_game(session, email, password, game="cpm2", max_retries=8):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
-    for attempt in range(max_retries):
-        try:
-            async with session.post(url, json={"email":email,"password":password,"returnSecureToken":True}, timeout=60) as resp:
-                data = await resp.json()
-                if resp.status == 200:
-                    return data.get("idToken")
-                else:
-                    error_msg = data.get('error', {}).get('message', 'Unknown error')
-                    print(f"❌ Sign-in failed: {error_msg}")
-                    return None
-        except Exception as e:
-            print(f"⚠️ Network error (attempt {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                return None
-            await asyncio.sleep(2 * (attempt + 1))
-    return None
-
-async def async_change_email(session, token, new_email, game="cpm2", max_retries=8):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
-    for attempt in range(max_retries):
-        try:
-            async with session.post(url, json={"idToken":token,"email":new_email,"returnSecureToken":True}, timeout=60) as resp:
-                return resp.status == 200
-        except Exception as e:
-            print(f"⚠️ Network error changing email (attempt {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                return False
-            await asyncio.sleep(2 * (attempt + 1))
-    return False
-
-async def async_change_password(session, token, new_password, game="cpm2", max_retries=8):
-    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
-    for attempt in range(max_retries):
-        try:
-            async with session.post(url, json={"idToken":token,"password":new_password,"returnSecureToken":True}, timeout=60) as resp:
-                return resp.status == 200
-        except Exception as e:
-            print(f"⚠️ Network error changing password (attempt {attempt+1}/{max_retries}): {e}")
-            if attempt == max_retries - 1:
-                return False
-            await asyncio.sleep(2 * (attempt + 1))
-    return False
-
-# ============================================================
-# ✅ SESSIONS & BULK TASK
-# ============================================================
-sessions = {}
-bulk_tasks = {}
-
-# ============================================================
-# ✅ CPM1 TOOL FUNCTIONS (INTEGRATED)
+# ✅ CPM1 TOOL FUNCTIONS
 # ============================================================
 ALL_CARS_DIR = 'all-cars'
 
@@ -689,7 +587,6 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
         last_progress = 0
         start_time = time.time()
         
-        # Send initial progress
         if progress_callback:
             await progress_callback(0, total_cars, 0, 0, "Starting...")
         
@@ -748,7 +645,6 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
             total_unlocked += batch_unlocked
             total_spent += batch_spent
             
-            # Send progress update every 20 cars or at completion
             if total_unlocked - last_progress >= 20 or total_unlocked >= total_cars:
                 elapsed = time.time() - start_time
                 speed = total_unlocked / elapsed if elapsed > 0 else 0
@@ -828,6 +724,109 @@ async def cpm1_inject_async(email, pwd, cid):
             return {"success": False, "message": "Injection rejected"}
         
         return {"success": True, "car_id": cid}
+
+# ============================================================
+# ✅ CPM1 TOOL PROCESS HANDLER (with access control & progress)
+# ============================================================
+async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message:
+        return
+    
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
+        return
+    
+    text = update.message.text.strip()
+    action = context.user_data.get('cpm1_action')
+    
+    if not action:
+        return
+    
+    # Prevent multiple simultaneous runs
+    if context.user_data.get('cpm1_running', False):
+        await reply_custom(update, "⏳ Please wait, a CPM1 Tool process is already running. ❌", context)
+        return
+    
+    try:
+        if action == 'unlock':
+            parts = text.split(':')
+            if len(parts) != 2:
+                await reply_custom(update, "❌ Invalid format. Use: email:password", context)
+                return
+            email, pwd = parts[0].strip(), parts[1].strip()
+            
+            # Set running flag
+            context.user_data['cpm1_running'] = True
+            
+            await reply_custom(update, f"⏳ Starting unlock all cars for {email}...", context)
+            
+            # Progress callback
+            async def progress_callback(unlocked, total, spent, speed, status):
+                try:
+                    await reply_custom(
+                        update,
+                        f"📊 Unlocked {unlocked}/{total} cars\n"
+                        f"💰 Spent: ${spent:,}\n"
+                        f"⚡ Speed: {speed:.1f} cars/sec\n"
+                        f"⏳ Status: {status}",
+                        context
+                    )
+                except:
+                    pass
+            
+            result = await cpm1_unlock_async(email, pwd, progress_callback)
+            
+            if result["success"]:
+                msg = (
+                    f"✅ UNLOCK COMPLETE! 🚀\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📧 Account: {email}\n"
+                    f"🚗 Unlocked: {result['unlocked']}/{result['total']}\n"
+                    f"💰 Spent: ${result['spent']:,}\n"
+                    f"⏳ Time: {result['time']:.1f}s\n"
+                    f"⚡ Speed: {result['speed']:.1f} cars/sec\n\n"
+                    f"👑 All cars unlocked successfully! 🔥"
+                )
+                await reply_custom(update, msg, context)
+            else:
+                await reply_custom(update, f"❌ Failed: {result['message']}", context)
+            
+            context.user_data.pop('cpm1_action', None)
+            context.user_data['cpm1_running'] = False
+            
+        elif action == 'inject':
+            parts = text.split(':')
+            if len(parts) != 3:
+                await reply_custom(update, "❌ Invalid format. Use: email:password:carID", context)
+                return
+            email, pwd, cid_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            cid = int(cid_str)
+            
+            context.user_data['cpm1_running'] = True
+            
+            await reply_custom(update, f"⏳ Injecting car #{cid} into {email}...", context)
+            
+            result = await cpm1_inject_async(email, pwd, cid)
+            
+            if result["success"]:
+                msg = (
+                    f"✅ INJECTION COMPLETE! 💉\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"📧 Account: {email}\n"
+                    f"🚗 Car ID: #{result['car_id']}\n\n"
+                    f"👑 Car injected successfully! 🔥"
+                )
+                await reply_custom(update, msg, context)
+            else:
+                await reply_custom(update, f"❌ Failed: {result['message']}", context)
+            
+            context.user_data.pop('cpm1_action', None)
+            context.user_data['cpm1_running'] = False
+    except Exception as e:
+        await reply_custom(update, f"❌ Error: {str(e)}", context)
+        context.user_data.pop('cpm1_action', None)
+        context.user_data['cpm1_running'] = False
 
 # ============================================================
 # ✅ ADMIN COMMANDS
@@ -1152,7 +1151,7 @@ async def start_free_trial_callback(update: Update, context: ContextTypes.DEFAUL
         await edit_custom(query, f"❌ Failed to activate trial: {msg}")
 
 # ============================================================
-# ✅ BUTTON HANDLER
+# ✅ BUTTON HANDLER (with CPM1 Tool instruction & access check)
 # ============================================================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1196,24 +1195,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== CPM1 TOOL =====
     if data == "cpm1_tool":
-        if user_id != ADMIN_ID: return
-        msg = "🚘 CPM1 TOOL 🔥\n━━━━━━━━━━━━━━━━━━━━━\n\nSelect action:"
-        keyboard = [
+        if user_id != ADMIN_ID:
+            # Check full access for non-admin users
+            if not has_full_access(user_id):
+                await edit_message(
+                    "⛔ **ACCESS DENIED** ⛔\n\n"
+                    "This tool is **ONLY for full-access users**.\n"
+                    "❌ Trial and 1-week key users cannot use this feature.\n\n"
+                    "💳 Upgrade to a higher plan to unlock this tool.\n"
+                    "👤 Contact @Maarkryan for more details."
+                )
+                return
+        # Show instructions
+        await edit_message(CPM1_INSTRUCTION, InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Unlock All Cars", callback_data="cpm1_unlock")],
             [InlineKeyboardButton("💉 Inject Car", callback_data="cpm1_inject")],
             [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")],
-        ]
-        await edit_message(msg, InlineKeyboardMarkup(keyboard))
+        ]))
         return
 
     if data == "cpm1_unlock":
-        if user_id != ADMIN_ID: return
+        if user_id != ADMIN_ID and not has_full_access(user_id):
+            await edit_message("⛔ Access denied. Full access only.")
+            return
         await edit_message("📧 Enter email and password (format: email:password)")
         context.user_data['cpm1_action'] = 'unlock'
         return
 
     if data == "cpm1_inject":
-        if user_id != ADMIN_ID: return
+        if user_id != ADMIN_ID and not has_full_access(user_id):
+            await edit_message("⛔ Access denied. Full access only.")
+            return
         await edit_message("📧 Enter email:password:carID (format: email:password:123)")
         context.user_data['cpm1_action'] = 'inject'
         return
@@ -1577,97 +1589,61 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i+chunk_size]
 
 # ============================================================
-# ✅ CPM1 TOOL PROCESS HANDLER (WITH PROGRESS UPDATES)
+# ✅ ASYNC AUTH (needed for bulk)
 # ============================================================
-async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
-        return
-    
-    text = update.message.text.strip()
-    action = context.user_data.get('cpm1_action')
-    
-    if not action:
-        return
-    
-    try:
-        if action == 'unlock':
-            parts = text.split(':')
-            if len(parts) != 2:
-                await reply_custom(update, "❌ Invalid format. Use: email:password", context)
-                return
-            email, pwd = parts[0].strip(), parts[1].strip()
-            
-            # Send initial message
-            await reply_custom(update, f"⏳ Starting unlock all cars for {email}...", context)
-            
-            # Define progress callback
-            async def progress_callback(unlocked, total, spent, speed, status):
-                try:
-                    # Send progress update every 20 cars
-                    await reply_custom(
-                        update,
-                        f"📊 Unlocked {unlocked}/{total} cars\n"
-                        f"💰 Spent: ${spent:,}\n"
-                        f"⚡ Speed: {speed:.1f} cars/sec\n"
-                        f"⏳ Status: {status}",
-                        context
-                    )
-                except:
-                    pass
-            
-            # Run unlock with progress
-            result = await cpm1_unlock_async(email, pwd, progress_callback)
-            
-            if result["success"]:
-                msg = (
-                    f"✅ UNLOCK COMPLETE! 🚀\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📧 Account: {email}\n"
-                    f"🚗 Unlocked: {result['unlocked']}/{result['total']}\n"
-                    f"💰 Spent: ${result['spent']:,}\n"
-                    f"⏳ Time: {result['time']:.1f}s\n"
-                    f"⚡ Speed: {result['speed']:.1f} cars/sec\n\n"
-                    f"👑 All cars unlocked successfully! 🔥"
-                )
-                await reply_custom(update, msg, context)
-            else:
-                await reply_custom(update, f"❌ Failed: {result['message']}", context)
-            
-            context.user_data.pop('cpm1_action', None)
-            
-        elif action == 'inject':
-            parts = text.split(':')
-            if len(parts) != 3:
-                await reply_custom(update, "❌ Invalid format. Use: email:password:carID", context)
-                return
-            email, pwd, cid_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
-            cid = int(cid_str)
-            
-            await reply_custom(update, f"⏳ Injecting car #{cid} into {email}...", context)
-            
-            result = await cpm1_inject_async(email, pwd, cid)
-            
-            if result["success"]:
-                msg = (
-                    f"✅ INJECTION COMPLETE! 💉\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📧 Account: {email}\n"
-                    f"🚗 Car ID: #{result['car_id']}\n\n"
-                    f"👑 Car injected successfully! 🔥"
-                )
-                await reply_custom(update, msg, context)
-            else:
-                await reply_custom(update, f"❌ Failed: {result['message']}", context)
-            
-            context.user_data.pop('cpm1_action', None)
-    except Exception as e:
-        await reply_custom(update, f"❌ Error: {str(e)}", context)
-        context.user_data.pop('cpm1_action', None)
+async def async_sign_in_game(session, email, password, game="cpm2", max_retries=8):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+    for attempt in range(max_retries):
+        try:
+            async with session.post(url, json={"email":email,"password":password,"returnSecureToken":True}, timeout=60) as resp:
+                data = await resp.json()
+                if resp.status == 200:
+                    return data.get("idToken")
+                else:
+                    error_msg = data.get('error', {}).get('message', 'Unknown error')
+                    print(f"❌ Sign-in failed: {error_msg}")
+                    return None
+        except Exception as e:
+            print(f"⚠️ Network error (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                return None
+            await asyncio.sleep(2 * (attempt + 1))
+    return None
+
+async def async_change_email(session, token, new_email, game="cpm2", max_retries=8):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
+    for attempt in range(max_retries):
+        try:
+            async with session.post(url, json={"idToken":token,"email":new_email,"returnSecureToken":True}, timeout=60) as resp:
+                return resp.status == 200
+        except Exception as e:
+            print(f"⚠️ Network error changing email (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                return False
+            await asyncio.sleep(2 * (attempt + 1))
+    return False
+
+async def async_change_password(session, token, new_password, game="cpm2", max_retries=8):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
+    for attempt in range(max_retries):
+        try:
+            async with session.post(url, json={"idToken":token,"password":new_password,"returnSecureToken":True}, timeout=60) as resp:
+                return resp.status == 200
+        except Exception as e:
+            print(f"⚠️ Network error changing password (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                return False
+            await asyncio.sleep(2 * (attempt + 1))
+    return False
+
+# ============================================================
+# ✅ SESSIONS & BULK TASK
+# ============================================================
+sessions = {}
+bulk_tasks = {}
 
 # ============================================================
 # ✅ MESSAGE HANDLER
@@ -2069,6 +2045,76 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
     await reply_custom(update, f"✅ Maintenance broadcast sent!\n📤 Success: {success}\n❌ Failed: {failed}", context)
 
 # ============================================================
+# ✅ SYNC AUTH (for single change)
+# ============================================================
+def sign_in_game(email, password, game="cpm2"):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+    try:
+        r = requests.post(url, json={"email":email,"password":password,"returnSecureToken":True}, timeout=60)
+        if r.status_code == 200:
+            return r.json()["idToken"]
+    except:
+        pass
+    return None
+
+def change_email(token, new_email, game="cpm2"):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
+    try:
+        r = requests.post(url, json={"idToken":token,"email":new_email,"returnSecureToken":True}, timeout=60)
+        return r.status_code == 200
+    except:
+        return False
+
+def change_password(token, new_password, game="cpm2"):
+    api_key = GAME_AUTH_KEYS.get(game, GAME_AUTH_KEYS["cpm2"])
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
+    try:
+        r = requests.post(url, json={"idToken":token,"password":new_password,"returnSecureToken":True}, timeout=60)
+        return r.status_code == 200
+    except:
+        return False
+
+# ============================================================
+# ✅ NOTIFICATION (for keys/trials)
+# ============================================================
+async def send_activation_notification(context, user_id, activation_type, plan_or_duration=""):
+    if activation_type == "KEY":
+        msg = (
+            f"🔥 KEY ACTIVATED – LET'S GO! 🔥\n\n"
+            f"Your {plan_or_duration.upper()} key is now ACTIVE!\n"
+            "You're all set to dominate CPM1/2 with this beast of a tool.\n\n"
+            "⚡ What you can do:\n"
+            "✅ Change emails & passwords instantly\n"
+            "✅ Bulk change thousands of accounts\n"
+            "✅ 24/7 access – no limits\n\n"
+            "👉 Use /start now and start cooking! 💪\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 MARK CPM1/2 CHANGER TOOL\n"
+            "💸 Powered by @Maarkryan"
+        )
+    else:
+        msg = (
+            f"🎁 TRIAL ACTIVATED – TEST THE BEAST! 🎁\n\n"
+            f"Your {plan_or_duration} trial is now ACTIVE!\n"
+            "Experience the power of this changer tool – no strings attached.\n\n"
+            "⚡ What you can test:\n"
+            "✅ Change emails & passwords\n"
+            "✅ Bulk change (limited to 1000 per batch)\n"
+            "✅ Real-time processing\n\n"
+            f"⏳ Your trial ends after: {plan_or_duration}\n"
+            "👉 Use /start now and see the magic! 🚀\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📌 MARK CPM1/2 CHANGER TOOL\n"
+            "💸 Buy full access: @Maarkryan"
+        )
+    try:
+        await send_custom(chat_id=user_id, text=msg, context=context)
+    except Exception as e:
+        print(f"⚠️ Could not send notification: {e}")
+
+# ============================================================
 # ✅ RUN BOT
 # ============================================================
 def run_bot():
@@ -2123,10 +2169,10 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, message_handler))
 
     print("="*50)
-    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL WITH PROGRESS")
-    print("📌 Unlock All Cars now shows live progress updates!")
-    print("📌 All features: Single Change, Bulk Change, CPM1 Tool, Admin Panel")
-    print("📌 Custom emojis with fallback")
+    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL")
+    print("📌 CPM1 Tool with instructions & access control")
+    print("📌 Unlock All Cars with live progress updates")
+    print("📌 Full access only (no trial, no 1-week)")
     print("📌 Background bulk processing with /continue")
     print("📌 Admin: /addtrial, /removetrial, /triallist, /claimagain, /undermaintinance")
     print("📌 Users: /dashboard")
