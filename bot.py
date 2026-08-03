@@ -4,7 +4,7 @@ import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import NetworkError, TimedOut, BadRequest
+from telegram.error import NetworkError, TimedOut, BadRequest, Forbidden
 from flask import Flask
 
 app_flask = Flask(__name__)
@@ -104,14 +104,25 @@ async def send_custom(chat_id, text, context, reply_markup=None):
             parse_mode=None,
             entities=entities if entities else None
         )
+    except Forbidden as e:
+        print(f"⚠️ Bot blocked by user {chat_id}: {e}")
+        # Silently skip - user blocked the bot
+        pass
     except Exception as e:
         print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=None
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=None
+            )
+        except Forbidden:
+            print(f"⚠️ Bot blocked by user {chat_id}")
+            pass
+        except Exception as e2:
+            print(f"⚠️ Failed to send message: {e2}")
+            pass
 
 async def reply_custom(update, text, context, reply_markup=None):
     await send_custom(update.effective_chat.id, text, context, reply_markup)
@@ -125,46 +136,19 @@ async def edit_custom(query, text, reply_markup=None):
             parse_mode=None,
             entities=entities if entities else None
         )
+    except Forbidden:
+        print(f"⚠️ Bot blocked by user {query.from_user.id}")
+        pass
     except Exception as e:
         if "Message is not modified" in str(e):
             pass
         else:
             try:
                 await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
+            except Forbidden:
+                pass
             except:
                 pass
-
-# ============================================================
-# ✅ CPM1 TOOL INSTRUCTION (WITH EMOJIS)
-# ============================================================
-CPM1_INSTRUCTION = (
-    "🚘 **CPM1 TOOL – UNLOCK ALL CARS & INJECT** 🚘\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "⚡ **Unlock All Cars**\n"
-    "📌 This feature unlocks **ALL** cars from your `all-cars/` folder into your account.\n"
-    "📌 **Requirements:**\n"
-    "  ✅ Your account must have **at least 1 car** in the garage (blueprint).\n"
-    "  ✅ You need **enough in-game money** (approx. 100 per car).\n"
-    "  ✅ You must have **opened the account in the game** at least once.\n"
-    "  ✅ The account must have **available world sale slots**.\n\n"
-    "🔥 **How it works:**\n"
-    "  • The bot logs into your account.\n"
-    "  • It takes your best car as a blueprint.\n"
-    "  • It scans the world sale for available slots.\n"
-    "  • It buys cars using your in-game money.\n"
-    "  • You'll receive progress updates every 20 cars.\n\n"
-    "💉 **Inject Car**\n"
-    "📌 Injects a **specific car ID** into your account.\n"
-    "📌 **Requirements:**\n"
-    "  ✅ Car ID must exist in the game.\n"
-    "  ✅ You need an available world sale slot.\n"
-    "  ✅ Your account must have at least 1 car as blueprint.\n\n"
-    "⚠️ **Important:**\n"
-    "  • This tool is **ONLY for full-access users** (not trial, not 1-week).\n"
-    "  • Do not spam the buttons – the process runs in the background.\n"
-    "  • If you encounter errors, check your account first.\n\n"
-    "👇 **Select an action below:**"
-)
 
 # ============================================================
 # ✅ LOGGING
@@ -511,6 +495,38 @@ def has_access(user_id):
     return False
 
 # ============================================================
+# ✅ CPM1 TOOL INSTRUCTION (WITH EMOJIS)
+# ============================================================
+CPM1_INSTRUCTION = (
+    "🚘 **CPM1 TOOL – UNLOCK ALL CARS & INJECT** 🚘\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "⚡ **Unlock All Cars**\n"
+    "📌 This feature unlocks **ALL** cars from your `all-cars/` folder into your account.\n"
+    "📌 **Requirements:**\n"
+    "  ✅ Your account must have **at least 1 car** in the garage (blueprint).\n"
+    "  ✅ You need **enough in-game money** (approx. 100 per car).\n"
+    "  ✅ You must have **opened the account in the game** at least once.\n"
+    "  ✅ The account must have **available world sale slots**.\n\n"
+    "🔥 **How it works:**\n"
+    "  • The bot logs into your account.\n"
+    "  • It takes your best car as a blueprint.\n"
+    "  • It scans the world sale for available slots.\n"
+    "  • It buys cars using your in-game money.\n"
+    "  • You'll receive progress updates every 20 cars.\n\n"
+    "💉 **Inject Car**\n"
+    "📌 Injects a **specific car ID** into your account.\n"
+    "📌 **Requirements:**\n"
+    "  ✅ Car ID must exist in the game.\n"
+    "  ✅ You need an available world sale slot.\n"
+    "  ✅ Your account must have at least 1 car as blueprint.\n\n"
+    "⚠️ **Important:**\n"
+    "  • This tool is **ONLY for full-access users** (not trial, not 1-week).\n"
+    "  • Do not spam the buttons – the process runs in the background.\n"
+    "  • If you encounter errors, check your account first.\n\n"
+    "👇 **Select an action below:**"
+)
+
+# ============================================================
 # ✅ NOTIFICATION
 # ============================================================
 async def send_activation_notification(context, user_id, activation_type, plan_or_duration=""):
@@ -546,7 +562,7 @@ async def send_activation_notification(context, user_id, activation_type, plan_o
     try:
         await send_custom(chat_id=user_id, text=msg, context=context)
     except Exception as e:
-        print(f"⚠️ Could not send notification: {e}")
+        print(f"⚠️ Could not send notification to {user_id}: {e}")
 
 # ============================================================
 # ✅ SYNC AUTH
@@ -1190,6 +1206,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="⚠️ An error occurred. Please try again later.",
                 parse_mode=None
             )
+        except Forbidden:
+            print(f"⚠️ Bot blocked by user {chat_id}")
+            pass
         except:
             pass
 
@@ -1280,7 +1299,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👤 Contact @Maarkryan for more details."
             )
             return
-        # Show instruction message with emojis
         await edit_message(CPM1_INSTRUCTION, InlineKeyboardMarkup([
             [InlineKeyboardButton("🔓 Unlock All Cars", callback_data="cpm1_unlock")],
             [InlineKeyboardButton("💉 Inject Car", callback_data="cpm1_inject")],
@@ -1509,6 +1527,9 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
             try:
                 await reply_custom(update, text, context)
                 return
+            except Forbidden:
+                print(f"⚠️ Bot blocked by user {update.effective_user.id}")
+                return
             except:
                 if attempt < retries - 1:
                     await asyncio.sleep(2)
@@ -1582,6 +1603,9 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
                         caption=f"📎 Updated accounts (Batch #{batch_num}, Part {i}/{len(output_chunks)})"
                     )
                 os.remove(filename)
+            except Forbidden:
+                print(f"⚠️ Bot blocked by user {user_id}")
+                pass
             except Exception as e:
                 print(f"❌ Failed to send file: {e}")
         
@@ -1700,6 +1724,9 @@ async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                         f"⏳ Status: {status}",
                         context
                     )
+                except Forbidden:
+                    print(f"⚠️ Bot blocked by user {user_id}")
+                    pass
                 except:
                     pass
             
@@ -1747,6 +1774,9 @@ async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 await reply_custom(update, f"❌ Failed: {result['message']}", context)
             
             context.user_data.pop('cpm1_action', None)
+    except Forbidden:
+        print(f"⚠️ Bot blocked by user {user_id}")
+        context.user_data.pop('cpm1_action', None)
     except Exception as e:
         await reply_custom(update, f"❌ Error: {str(e)}", context)
         context.user_data.pop('cpm1_action', None)
@@ -2087,7 +2117,6 @@ async def claimagain_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
             return
         
-        # Get users who have used the bot
         users = db_get("users") or {}
         if not users:
             await reply_custom(update, "📭 No users to notify.", context)
@@ -2111,6 +2140,9 @@ async def claimagain_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await send_custom(int(uid), msg, context)
                 success += 1
                 await asyncio.sleep(0.05)
+            except Forbidden:
+                failed += 1
+                print(f"⚠️ Bot blocked by user {uid}")
             except Exception as e:
                 print(f"Failed to send to {uid}: {e}")
                 failed += 1
@@ -2154,6 +2186,9 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
                 await send_custom(int(uid), msg, context)
                 success += 1
                 await asyncio.sleep(0.05)
+            except Forbidden:
+                failed += 1
+                print(f"⚠️ Bot blocked by user {uid}")
             except Exception as e:
                 print(f"Failed to send to {uid}: {e}")
                 failed += 1
@@ -2171,7 +2206,6 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
 # ✅ RUN BOT
 # ============================================================
 def run_bot():
-    # ✅ Auto-extract all-cars.zip if exists
     if os.path.exists('all-cars.zip'):
         print("📦 Extracting all-cars.zip...")
         try:
@@ -2183,7 +2217,6 @@ def run_bot():
         except Exception as e:
             print(f"⚠️ Failed to extract: {e}")
     
-    # Log all-cars folder
     if os.path.exists('all-cars'):
         files = os.listdir('all-cars')
         print(f"📁 all-cars folder has {len(files)} files")
@@ -2230,7 +2263,7 @@ def run_bot():
     print("📌 Admin: /addtrial, /removetrial, /triallist, /claimagain, /undermaintinance")
     print("📌 Users: /dashboard")
     print("📌 ALL CUSTOM EMOJIS WORKING ✅")
-    print("📌 /claimagain FIXED - won't crash")
+    print("📌 BLOCKED USER HANDLING ✅ (bot won't crash)")
     print("="*50)
 
     loop.run_until_complete(app.initialize())
