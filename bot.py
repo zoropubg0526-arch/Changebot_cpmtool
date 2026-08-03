@@ -4,7 +4,7 @@ import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import NetworkError, TimedOut, BadRequest, Forbidden, Conflict
+from telegram.error import Forbidden, Conflict
 from flask import Flask
 
 app_flask = Flask(__name__)
@@ -33,7 +33,7 @@ GAME_AUTH_KEYS = {
 }
 
 # ============================================================
-# ✅ CUSTOM EMOJI MAPPING (LAHAT NG BINIGAY MO)
+# ✅ CUSTOM EMOJI MAPPING
 # ============================================================
 CUSTOM_EMOJI_MAP = {
     '😂': '5406913184810409829', '😄': '5386587088873331829',
@@ -59,7 +59,7 @@ CUSTOM_EMOJI_MAP = {
     '⚡1': '6100277122935295595', '⚡2': '6100472578307002133',
     '⚡3': '6102404476071579522', '⚡4': '6100671388048166850',
     '⚡5': '6100278127957643014',
-    '🥵': '6307832826263768178',  # ADMIN-ONLY
+    '🥵': '6307832826263768178',
 }
 
 def get_custom_entities(text):
@@ -104,11 +104,10 @@ async def send_custom(chat_id, text, context, reply_markup=None):
             parse_mode=None,
             entities=entities if entities else None
         )
-    except Forbidden as e:
-        print(f"⚠️ Bot blocked by user {chat_id}: {e}")
+    except Forbidden:
         pass
     except Exception as e:
-        print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
+        print(f"⚠️ Custom emoji error: {e}")
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -116,11 +115,7 @@ async def send_custom(chat_id, text, context, reply_markup=None):
                 reply_markup=reply_markup,
                 parse_mode=None
             )
-        except Forbidden:
-            print(f"⚠️ Bot blocked by user {chat_id}")
-            pass
-        except Exception as e2:
-            print(f"⚠️ Failed to send message: {e2}")
+        except:
             pass
 
 async def reply_custom(update, text, context, reply_markup=None):
@@ -135,26 +130,11 @@ async def edit_custom(query, text, reply_markup=None):
             parse_mode=None,
             entities=entities if entities else None
         )
-    except Forbidden:
-        print(f"⚠️ Bot blocked by user {query.from_user.id}")
-        pass
-    except Exception as e:
-        if "Message is not modified" in str(e):
+    except:
+        try:
+            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
+        except:
             pass
-        else:
-            try:
-                await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
-            except Forbidden:
-                pass
-            except:
-                pass
-
-# ============================================================
-# ✅ LOGGING
-# ============================================================
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # ============================================================
 # ✅ FIREBASE HELPERS
@@ -428,7 +408,6 @@ def has_trial(user_id):
     return False
 
 def has_full_access(user_id):
-    """Check if user has full access (not trial, not 1-week key)"""
     if user_id == ADMIN_ID:
         return True
     
@@ -494,7 +473,7 @@ def has_access(user_id):
     return False
 
 # ============================================================
-# ✅ CPM1 TOOL INSTRUCTION (WITH EMOJIS)
+# ✅ CPM1 TOOL INSTRUCTION
 # ============================================================
 CPM1_INSTRUCTION = (
     "🚘 **CPM1 TOOL – UNLOCK ALL CARS & INJECT** 🚘\n"
@@ -653,7 +632,7 @@ sessions = {}
 bulk_tasks = {}
 
 # ============================================================
-# ✅ CPM1 TOOL FUNCTIONS (INTEGRATED & IMPROVED)
+# ✅ CPM1 TOOL FUNCTIONS (FIXED WITH LOGGING & FALLBACK)
 # ============================================================
 ALL_CARS_DIR = 'all-cars'
 
@@ -662,20 +641,32 @@ def load_all_cars():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cars_dir = os.path.join(base_dir, ALL_CARS_DIR)
     
-    if not os.path.exists(cars_dir):
-        print(f"⚠️ all-cars folder not found at {cars_dir}")
-        return cars
-    
-    files = glob.glob(f'{cars_dir}/*.json')
-    print(f"📁 Found {len(files)} JSON files in {cars_dir}")
-    
-    for filepath in sorted(files):
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                car = json.load(f)
-                cars.append(car)
-        except Exception as e:
-            print(f"⚠️ Error loading {filepath}: {e}")
+    # First, try the dedicated folder
+    if os.path.exists(cars_dir):
+        files = glob.glob(f'{cars_dir}/*.json')
+        print(f"📁 Found {len(files)} JSON files in {cars_dir}")
+        for filepath in sorted(files):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    car = json.load(f)
+                    cars.append(car)
+            except Exception as e:
+                print(f"⚠️ Error loading {filepath}: {e}")
+    else:
+        print(f"⚠️ {cars_dir} folder not found, checking root for .json files...")
+        # Fallback: look for .json files in root
+        root_files = glob.glob('*.json')
+        if root_files:
+            print(f"📁 Found {len(root_files)} JSON files in root")
+            for filepath in sorted(root_files):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        car = json.load(f)
+                        cars.append(car)
+                except Exception as e:
+                    print(f"⚠️ Error loading {filepath}: {e}")
+        else:
+            print("⚠️ No JSON files found anywhere!")
     
     print(f"✅ Loaded {len(cars)} car files")
     return cars
@@ -702,20 +693,31 @@ async def api_async(session, tok, ep, data, timeout=8):
         async with session.post(f'{EU}/{ep}', json={'data': data}, headers=h,
                                timeout=aiohttp.ClientTimeout(total=timeout)) as r:
             text = await r.text()
+            if r.status != 200:
+                print(f"⚠️ API {ep} returned {r.status}: {text[:200]}")
             return r.status, text
-    except:
+    except Exception as e:
+        print(f"⚠️ API {ep} error: {e}")
         return 500, ''
 
 async def get_world_sale_slots_fast(session, tok):
-    _, t = await api_async(session, tok, 'WSGetCarListV3', 20, timeout=5)
+    status, text = await api_async(session, tok, 'WSGetCarListV3', 20, timeout=5)
+    if status != 200:
+        print(f"⚠️ Failed to get slots: status {status}")
+        return []
     try:
-        response_data = json.loads(t)
+        response_data = json.loads(text)
         if 'result' in response_data:
             lst = json.loads(response_data['result'])
             if lst:
+                print(f"✅ Got {len(lst)} slots from world sale")
                 return lst
-    except:
-        pass
+            else:
+                print("⚠️ No slots in response (empty list)")
+        else:
+            print(f"⚠️ No 'result' key in response: {response_data}")
+    except Exception as e:
+        print(f"⚠️ Error parsing slots: {e}")
     return []
 
 async def buy_car_from_slot(session, tok, slot, car):
@@ -738,21 +740,27 @@ async def buy_car_from_slot(session, tok, slot, car):
         "disliked": False,
         "mode": 1,
     }
-    _, t = await api_async(session, tok, 'WSPurchaseCarV3', json.dumps(payload), timeout=6)
+    status, text = await api_async(session, tok, 'WSPurchaseCarV3', json.dumps(payload), timeout=6)
+    if status != 200:
+        print(f"⚠️ Purchase failed: status {status}")
+        return False
     try:
-        return json.loads(t).get('result') == 1
+        return json.loads(text).get('result') == 1
     except:
         return False
 
 async def cpm1_unlock_async(email, pwd, progress_callback=None):
     all_cars = load_all_cars()
     if not all_cars:
-        return {"success": False, "message": "❌ No car files found in all-cars/ folder"}
+        return {"success": False, "message": "❌ No car files found. Upload JSON files in all-cars/ folder."}
 
-    cfg = {"batch_size": 30, "concurrency": 50, "buy_delay": 0.05, "slot_wait": 0.2}
+    cfg = {"batch_size": 20, "concurrency": 30, "buy_delay": 0.1, "slot_wait": 0.5}
     min_price = 0
     max_price = 10000
     total_cars = len(all_cars)
+    max_time = 300  # 5 minutes timeout
+    start_time = time.time()
+    last_progress_time = start_time
 
     connector = aiohttp.TCPConnector(limit=cfg["concurrency"], limit_per_host=cfg["concurrency"])
     async with aiohttp.ClientSession(connector=connector) as session:
@@ -760,25 +768,35 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
             await progress_callback(0, total_cars, 0, 0, "⏳ Authenticating...")
         tok, uid = await login_async(session, email, pwd)
         if not tok:
-            return {"success": False, "message": "❌ Authentication failed"}
+            return {"success": False, "message": "❌ Authentication failed. Check your credentials."}
 
         total_unlocked = 0
         total_spent = 0
         car_index = 0
         unlocked_ids = set()
         last_progress = 0
-        start_time = time.time()
         no_slot_count = 0
+        no_progress_count = 0
 
         if progress_callback:
             await progress_callback(0, total_cars, 0, 0, "⏳ Looking for world sale slots...")
 
         while total_unlocked < total_cars:
+            # Check timeout
+            if time.time() - start_time > max_time:
+                return {
+                    "success": False, 
+                    "message": f"⏰ Timeout after {max_time}s. Unlocked {total_unlocked}/{total_cars} cars. Check if world sale has available slots or if account has enough money."
+                }
+
             slots = await get_world_sale_slots_fast(session, tok)
             if not slots:
                 no_slot_count += 1
-                if no_slot_count % 5 == 0 and progress_callback:
-                    await progress_callback(total_unlocked, total_cars, total_spent, 0, f"⏳ Waiting for slots... ({no_slot_count*cfg['slot_wait']:.1f}s)")
+                if no_slot_count % 10 == 0 and progress_callback:
+                    await progress_callback(
+                        total_unlocked, total_cars, total_spent, 0,
+                        f"⏳ Waiting for slots... ({no_slot_count*cfg['slot_wait']:.1f}s) - No cars for sale right now"
+                    )
                 await asyncio.sleep(cfg["slot_wait"])
                 continue
             else:
@@ -796,9 +814,20 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
 
             if not valid_slots:
                 if progress_callback:
-                    await progress_callback(total_unlocked, total_cars, total_spent, 0, "⏳ No new cars in price range, retrying...")
+                    await progress_callback(
+                        total_unlocked, total_cars, total_spent, 0,
+                        f"⏳ No new cars in price range, checking again..."
+                    )
                 await asyncio.sleep(cfg["slot_wait"])
+                no_progress_count += 1
+                if no_progress_count > 20:  # 10 seconds no progress
+                    return {
+                        "success": False,
+                        "message": f"❌ No buyable cars found after {no_progress_count*cfg['slot_wait']:.1f}s. Make sure you have enough money and world sale has cars."
+                    }
                 continue
+            else:
+                no_progress_count = 0
 
             remaining = total_cars - total_unlocked
             batch = valid_slots[:min(cfg["batch_size"], remaining)]
@@ -835,12 +864,16 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
             total_unlocked += batch_unlocked
             total_spent += batch_spent
 
-            if total_unlocked - last_progress >= 10 or total_unlocked >= total_cars:
+            if total_unlocked > last_progress or total_unlocked >= total_cars:
                 elapsed = time.time() - start_time
                 speed = total_unlocked / elapsed if elapsed > 0 else 0
                 if progress_callback:
-                    await progress_callback(total_unlocked, total_cars, total_spent, speed, f"🚀 {total_unlocked}/{total_cars} cars")
+                    await progress_callback(
+                        total_unlocked, total_cars, total_spent, speed,
+                        f"🚀 {total_unlocked}/{total_cars} cars"
+                    )
                 last_progress = total_unlocked
+                last_progress_time = time.time()
 
             if total_unlocked >= total_cars:
                 break
@@ -1137,7 +1170,7 @@ async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
 # ============================================================
-# ✅ BOT HANDLERS (WITH LOADING AND TRIAL MESSAGES)
+# ✅ BOT HANDLERS
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1215,9 +1248,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="⚠️ An error occurred. Please try again later.",
                 parse_mode=None
             )
-        except Forbidden:
-            print(f"⚠️ Bot blocked by user {chat_id}")
-            pass
         except:
             pass
 
@@ -1255,7 +1285,7 @@ async def start_free_trial_callback(update: Update, context: ContextTypes.DEFAUL
         await edit_custom(query, f"❌ Failed to activate trial: {msg}")
 
 # ============================================================
-# ✅ BUTTON HANDLER (WITH CPM1 TOOL INSTRUCTION)
+# ✅ BUTTON HANDLER
 # ============================================================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1297,7 +1327,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def edit_message(text, reply_markup=None):
         await edit_custom(query, text, reply_markup)
 
-    # ===== CPM1 TOOL (WITH INSTRUCTION) =====
+    # ===== CPM1 TOOL =====
     if data == "cpm1_tool":
         if user_id != ADMIN_ID and not has_full_access(user_id):
             await edit_message(
@@ -1476,7 +1506,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # ============================================================
-# ✅ PROCESS BULK CHANGE (ASYNC BACKGROUND)
+# ✅ PROCESS BULK CHANGE
 # ============================================================
 async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE, resume=False):
     user_id = update.effective_user.id
@@ -2220,18 +2250,34 @@ def run_bot():
         print("📦 Extracting all-cars.zip...")
         try:
             with zipfile.ZipFile('all-cars.zip', 'r') as zip_ref:
-                zip_ref.extractall('.')
-            print("✅ all-cars.zip extracted successfully!")
-            os.remove('all-cars.zip')
-            print("🗑️ Removed all-cars.zip")
+                # Check if zip is valid
+                if zip_ref.testzip() is not None:
+                    print("⚠️ all-cars.zip is corrupted!")
+                else:
+                    zip_ref.extractall('.')
+                    print("✅ all-cars.zip extracted successfully!")
+                    os.remove('all-cars.zip')
+                    print("🗑️ Removed all-cars.zip")
         except Exception as e:
             print(f"⚠️ Failed to extract: {e}")
     
+    # Check if all-cars folder exists after extraction
     if os.path.exists('all-cars'):
         files = os.listdir('all-cars')
         print(f"📁 all-cars folder has {len(files)} files")
+        # List first 5 files
+        for f in files[:5]:
+            print(f"   - {f}")
     else:
-        print("⚠️ all-cars folder not found!")
+        print("⚠️ all-cars folder not found! Creating empty folder...")
+        os.makedirs('all-cars', exist_ok=True)
+    
+    # Also check root for .json files
+    root_json = glob.glob('*.json')
+    if root_json:
+        print(f"📁 Found {len(root_json)} .json files in root:")
+        for f in root_json[:5]:
+            print(f"   - {f}")
     
     # Prevent conflict: ensure only one instance
     try:
@@ -2280,7 +2326,7 @@ def run_bot():
     print("="*50)
     print("🤖 MARK CPM1/2 CHANGER BOT - FINAL")
     print("📌 CPM1 Tool with instructions & full emojis")
-    print("📌 Unlock All Cars with live progress updates")
+    print("📌 Unlock All Cars with live progress updates & TIMEOUT")
     print("📌 Full access only (no trial, no 1-week)")
     print("📌 Background bulk processing with /continue")
     print("📌 Admin: /addtrial, /removetrial, /triallist, /claimagain, /undermaintinance")
@@ -2288,6 +2334,8 @@ def run_bot():
     print("📌 ALL CUSTOM EMOJIS WORKING ✅")
     print("📌 BLOCKED USER HANDLING ✅ (bot won't crash)")
     print("📌 CONFLICT PREVENTION ✅ (only one instance)")
+    print("📌 TIMEOUT: 5 minutes max for unlock all cars")
+    print("📌 FALLBACK: .json files in root folder also loaded")
     print("="*50)
 
     loop.run_until_complete(app.initialize())
