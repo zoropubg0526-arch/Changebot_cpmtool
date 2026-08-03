@@ -105,7 +105,6 @@ async def send_custom(chat_id, text, context, reply_markup=None):
             entities=entities if entities else None
         )
     except Exception as e:
-        # Fallback: send without custom entities
         print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
         await context.bot.send_message(
             chat_id=chat_id,
@@ -667,7 +666,7 @@ async def buy_car_from_slot(session, tok, slot, car):
     except:
         return False
 
-async def cpm1_unlock_async(email, pwd, callback=None):
+async def cpm1_unlock_async(email, pwd, progress_callback=None):
     all_cars = load_all_cars()
     if not all_cars:
         return {"success": False, "message": "No car files found in all-cars/ folder"}
@@ -689,6 +688,10 @@ async def cpm1_unlock_async(email, pwd, callback=None):
         unlocked_ids = set()
         last_progress = 0
         start_time = time.time()
+        
+        # Send initial progress
+        if progress_callback:
+            await progress_callback(0, total_cars, 0, 0, "Starting...")
         
         while total_unlocked < total_cars:
             slots = await get_world_sale_slots_fast(session, tok)
@@ -745,11 +748,12 @@ async def cpm1_unlock_async(email, pwd, callback=None):
             total_unlocked += batch_unlocked
             total_spent += batch_spent
             
+            # Send progress update every 20 cars or at completion
             if total_unlocked - last_progress >= 20 or total_unlocked >= total_cars:
                 elapsed = time.time() - start_time
                 speed = total_unlocked / elapsed if elapsed > 0 else 0
-                if callback:
-                    await callback(total_unlocked, total_cars, total_spent, speed)
+                if progress_callback:
+                    await progress_callback(total_unlocked, total_cars, total_spent, speed, f"{total_unlocked}/{total_cars}")
                 last_progress = total_unlocked
             
             if total_unlocked >= total_cars:
@@ -1573,7 +1577,7 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i+chunk_size]
 
 # ============================================================
-# ✅ CPM1 TOOL PROCESS HANDLER
+# ✅ CPM1 TOOL PROCESS HANDLER (WITH PROGRESS UPDATES)
 # ============================================================
 async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -1598,9 +1602,26 @@ async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 return
             email, pwd = parts[0].strip(), parts[1].strip()
             
-            await reply_custom(update, f"⏳ Starting unlock all cars...\n📧 {email}", context)
+            # Send initial message
+            await reply_custom(update, f"⏳ Starting unlock all cars for {email}...", context)
             
-            result = await cpm1_unlock_async(email, pwd)
+            # Define progress callback
+            async def progress_callback(unlocked, total, spent, speed, status):
+                try:
+                    # Send progress update every 20 cars
+                    await reply_custom(
+                        update,
+                        f"📊 Unlocked {unlocked}/{total} cars\n"
+                        f"💰 Spent: ${spent:,}\n"
+                        f"⚡ Speed: {speed:.1f} cars/sec\n"
+                        f"⏳ Status: {status}",
+                        context
+                    )
+                except:
+                    pass
+            
+            # Run unlock with progress
+            result = await cpm1_unlock_async(email, pwd, progress_callback)
             
             if result["success"]:
                 msg = (
@@ -2102,7 +2123,8 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, message_handler))
 
     print("="*50)
-    print("🤖 MARK CPM1/2 CHANGER BOT - COMPLETE")
+    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL WITH PROGRESS")
+    print("📌 Unlock All Cars now shows live progress updates!")
     print("📌 All features: Single Change, Bulk Change, CPM1 Tool, Admin Panel")
     print("📌 Custom emojis with fallback")
     print("📌 Background bulk processing with /continue")
