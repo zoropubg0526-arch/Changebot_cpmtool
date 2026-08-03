@@ -4,7 +4,7 @@ import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import NetworkError, TimedOut, BadRequest, Forbidden
+from telegram.error import NetworkError, TimedOut, BadRequest, Forbidden, Conflict
 from flask import Flask
 
 app_flask = Flask(__name__)
@@ -106,7 +106,6 @@ async def send_custom(chat_id, text, context, reply_markup=None):
         )
     except Forbidden as e:
         print(f"⚠️ Bot blocked by user {chat_id}: {e}")
-        # Silently skip - user blocked the bot
         pass
     except Exception as e:
         print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
@@ -512,7 +511,7 @@ CPM1_INSTRUCTION = (
     "  • It takes your best car as a blueprint.\n"
     "  • It scans the world sale for available slots.\n"
     "  • It buys cars using your in-game money.\n"
-    "  • You'll receive progress updates every 20 cars.\n\n"
+    "  • You'll receive progress updates every 10 cars.\n\n"
     "💉 **Inject Car**\n"
     "📌 Injects a **specific car ID** into your account.\n"
     "📌 **Requirements:**\n"
@@ -654,7 +653,7 @@ sessions = {}
 bulk_tasks = {}
 
 # ============================================================
-# ✅ CPM1 TOOL FUNCTIONS (INTEGRATED)
+# ✅ CPM1 TOOL FUNCTIONS (INTEGRATED & IMPROVED)
 # ============================================================
 ALL_CARS_DIR = 'all-cars'
 
@@ -748,35 +747,43 @@ async def buy_car_from_slot(session, tok, slot, car):
 async def cpm1_unlock_async(email, pwd, progress_callback=None):
     all_cars = load_all_cars()
     if not all_cars:
-        return {"success": False, "message": "No car files found in all-cars/ folder"}
-    
-    cfg = {"batch_size": 50, "concurrency": 200, "buy_delay": 0.05, "slot_wait": 0.1}
+        return {"success": False, "message": "❌ No car files found in all-cars/ folder"}
+
+    cfg = {"batch_size": 30, "concurrency": 50, "buy_delay": 0.05, "slot_wait": 0.2}
     min_price = 0
     max_price = 10000
     total_cars = len(all_cars)
-    
+
     connector = aiohttp.TCPConnector(limit=cfg["concurrency"], limit_per_host=cfg["concurrency"])
     async with aiohttp.ClientSession(connector=connector) as session:
+        if progress_callback:
+            await progress_callback(0, total_cars, 0, 0, "⏳ Authenticating...")
         tok, uid = await login_async(session, email, pwd)
         if not tok:
-            return {"success": False, "message": "Authentication failed"}
-        
+            return {"success": False, "message": "❌ Authentication failed"}
+
         total_unlocked = 0
         total_spent = 0
         car_index = 0
         unlocked_ids = set()
         last_progress = 0
         start_time = time.time()
-        
+        no_slot_count = 0
+
         if progress_callback:
-            await progress_callback(0, total_cars, 0, 0, "Starting...")
-        
+            await progress_callback(0, total_cars, 0, 0, "⏳ Looking for world sale slots...")
+
         while total_unlocked < total_cars:
             slots = await get_world_sale_slots_fast(session, tok)
             if not slots:
+                no_slot_count += 1
+                if no_slot_count % 5 == 0 and progress_callback:
+                    await progress_callback(total_unlocked, total_cars, total_spent, 0, f"⏳ Waiting for slots... ({no_slot_count*cfg['slot_wait']:.1f}s)")
                 await asyncio.sleep(cfg["slot_wait"])
                 continue
-            
+            else:
+                no_slot_count = 0
+
             valid_slots = []
             for slot in slots:
                 slot_id = slot.get('carID', 0)
@@ -786,14 +793,16 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
                 if slot_price < min_price or slot_price > max_price:
                     continue
                 valid_slots.append(slot)
-            
+
             if not valid_slots:
+                if progress_callback:
+                    await progress_callback(total_unlocked, total_cars, total_spent, 0, "⏳ No new cars in price range, retrying...")
                 await asyncio.sleep(cfg["slot_wait"])
                 continue
-            
+
             remaining = total_cars - total_unlocked
             batch = valid_slots[:min(cfg["batch_size"], remaining)]
-            
+
             tasks = []
             for slot in batch:
                 car = all_cars[car_index % total_cars]
@@ -812,9 +821,9 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
                 if 'Vynils' in new_car and isinstance(new_car['Vynils'], dict):
                     new_car['Vynils']['CarID'] = slot_id
                 tasks.append(buy_car_from_slot(session, tok, slot, new_car))
-            
+
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             batch_unlocked = 0
             batch_spent = 0
             for i, result in enumerate(results):
@@ -822,22 +831,22 @@ async def cpm1_unlock_async(email, pwd, progress_callback=None):
                     batch_unlocked += 1
                     batch_spent += batch[i].get('price', 0)
                     unlocked_ids.add(batch[i].get('carID', 0))
-            
+
             total_unlocked += batch_unlocked
             total_spent += batch_spent
-            
-            if total_unlocked - last_progress >= 20 or total_unlocked >= total_cars:
+
+            if total_unlocked - last_progress >= 10 or total_unlocked >= total_cars:
                 elapsed = time.time() - start_time
                 speed = total_unlocked / elapsed if elapsed > 0 else 0
                 if progress_callback:
-                    await progress_callback(total_unlocked, total_cars, total_spent, speed, f"{total_unlocked}/{total_cars}")
+                    await progress_callback(total_unlocked, total_cars, total_spent, speed, f"🚀 {total_unlocked}/{total_cars} cars")
                 last_progress = total_unlocked
-            
+
             if total_unlocked >= total_cars:
                 break
-            
+
             await asyncio.sleep(cfg["buy_delay"])
-        
+
         elapsed = time.time() - start_time
         return {
             "success": True,
@@ -2206,6 +2215,7 @@ async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT
 # ✅ RUN BOT
 # ============================================================
 def run_bot():
+    # Extract all-cars.zip if exists
     if os.path.exists('all-cars.zip'):
         print("📦 Extracting all-cars.zip...")
         try:
@@ -2223,6 +2233,13 @@ def run_bot():
     else:
         print("⚠️ all-cars folder not found!")
     
+    # Prevent conflict: ensure only one instance
+    try:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).bind(('localhost', 52345))
+    except socket.error:
+        print("⚠️ Another instance is already running. Exiting.")
+        sys.exit(1)
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -2235,6 +2252,12 @@ def run_bot():
     )
 
     app = Application.builder().token(TOKEN).request(request).build()
+
+    # Stop any previous polling
+    try:
+        loop.run_until_complete(app.updater.stop())
+    except:
+        pass
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addtrial", addtrial_command))
@@ -2264,6 +2287,7 @@ def run_bot():
     print("📌 Users: /dashboard")
     print("📌 ALL CUSTOM EMOJIS WORKING ✅")
     print("📌 BLOCKED USER HANDLING ✅ (bot won't crash)")
+    print("📌 CONFLICT PREVENTION ✅ (only one instance)")
     print("="*50)
 
     loop.run_until_complete(app.initialize())
