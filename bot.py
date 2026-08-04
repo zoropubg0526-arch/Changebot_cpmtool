@@ -21,7 +21,7 @@ def health():
     return "OK"
 
 # ============================================================
-# ✅ CONFIGURATION
+# ✅ CONFIGURATION (ORIGINAL - HINDI PINALITAN)
 # ============================================================
 TOKEN = "8803500377:AAE0bT-ReEKxTPXPHEbUO3ff80OLYbKF4Wg"
 ADMIN_ID = 6531314640
@@ -36,7 +36,7 @@ GAME_AUTH_KEYS = {
 }
 
 # ============================================================
-# ✅ CUSTOM EMOJI MAPPING (SAME AS GIVEAWAY BOT)
+# ✅ CUSTOM EMOJI MAPPING (ORIGINAL)
 # ============================================================
 CUSTOM_EMOJI_MAP = {
     '😂': '5406913184810409829', '😄': '5386587088873331829',
@@ -74,11 +74,14 @@ def get_custom_entities(text):
         if i + 1 < len(text) and text[i:i+2] == '☑️':
             ch = '☑️'
             utf16_len = 2
+            i += 2
         elif i + 1 < len(text) and text[i:i+2] == '✔️':
             ch = '✔️'
             utf16_len = 2
+            i += 2
         else:
             utf16_len = len(ch.encode('utf-16-le')) // 2
+            i += 1
         
         if ch in CUSTOM_EMOJI_MAP:
             entities.append(MessageEntity(
@@ -88,18 +91,26 @@ def get_custom_entities(text):
                 custom_emoji_id=CUSTOM_EMOJI_MAP[ch]
             ))
         offset += utf16_len
-        i += 1 if utf16_len == 1 else 2
     return entities
 
 async def send_custom(chat_id, text, context, reply_markup=None):
     entities = get_custom_entities(text)
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=reply_markup,
-        parse_mode=None,
-        entities=entities if entities else None
-    )
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=None,
+            entities=entities if entities else None
+        )
+    except Exception as e:
+        print(f"⚠️ Custom emoji error: {e}. Sending without entities.")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=None
+        )
 
 async def reply_custom(update, text, context, reply_markup=None):
     await send_custom(update.effective_chat.id, text, context, reply_markup)
@@ -801,12 +812,13 @@ async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
 # ============================================================
-# ✅ BOT HANDLERS
+# ✅ BOT HANDLERS - FIXED: Hindi na stuck sa loading
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     await reply_custom(update, "⏳ Loading... 🔄", context)
 
+    # Admin
     if user_id == ADMIN_ID:
         caption = "👑 Welcome, Admin! 🥵\nWhat would you like to do?"
         keyboard = [
@@ -815,13 +827,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🛠️ Admin Panel", callback_data="admin_panel")],
         ]
         await send_custom(chat_id=update.effective_chat.id, text=caption, context=context, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
+        return  # <-- IMPORTANT: Para hindi na mag-proceed sa ibang code
 
+    # Maintenance
     maint = get_maintenance()
     if maint.get("active"):
         await send_custom(chat_id=update.effective_chat.id, text=maint.get("message"), context=context)
-        return
+        return  # <-- IMPORTANT
 
+    # Check access
     if not has_access(user_id):
         if had_key(user_id):
             msg = (
@@ -832,6 +846,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💸 Thanks for your support! 💸"
             )
             await send_custom(chat_id=update.effective_chat.id, text=msg, context=context)
+            return  # <-- IMPORTANT
         else:
             if has_used_first_trial(user_id):
                 msg = (
@@ -842,6 +857,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "📌 MARK CPM1/2 CHANGER TOOL"
                 )
                 await send_custom(chat_id=update.effective_chat.id, text=msg, context=context)
+                return  # <-- IMPORTANT
             else:
                 msg = (
                     "🎁 FREE 30-MINUTE TRIAL! 🎁\n\n"
@@ -858,14 +874,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("💬 Contact Admin", callback_data="msg_admin")],
                 ])
                 await send_custom(chat_id=update.effective_chat.id, text=msg, context=context, reply_markup=keyboard)
-        return
+                return  # <-- IMPORTANT
 
+    # May access na ang user
     caption = "🎮 Choose your mode:"
     keyboard = [
         [InlineKeyboardButton("🔄 Single Change", callback_data="single_change")],
         [InlineKeyboardButton("📦 Bulk Change", callback_data="bulk_change_start")],
     ]
     await send_custom(chat_id=update.effective_chat.id, text=caption, context=context, reply_markup=InlineKeyboardMarkup(keyboard))
+    return  # <-- IMPORTANT
 
 # ============================================================
 # ✅ FREE TRIAL CALLBACK
@@ -1303,7 +1321,7 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i+chunk_size]
 
 # ============================================================
-# ✅ MESSAGE HANDLER
+# ✅ MESSAGE HANDLER - FIXED
 # ============================================================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if message exists
@@ -1405,6 +1423,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sess = sessions[user_id]
     state = sess.get('state', 'logged_out')
 
+    # ---- Bulk change flows ----
     if state == 'awaiting_bulk_list':
         if document:
             try:
@@ -1434,14 +1453,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == 'awaiting_bulk_new_value':
         new_value = text
-        # Store the new value and start background task
+        if not new_value:
+            await reply_custom(update, "❌ Please send a valid value.", context)
+            return
         sess['bulk_new_value'] = new_value
-        # Start bulk change in background
         asyncio.create_task(process_bulk_change(update, context, resume=False))
         await reply_custom(update, "✅ Bulk change started in background! 🚀\nYou can continue using other commands while it runs.\nUse /continue to check status.", context)
         return
 
-    # ---- Single change (login) ----
+    # ---- Single change flows ----
     if text and text.lower() == "login" and state == 'logged_out':
         sess['state'] = 'awaiting_game'
         await reply_custom(update,
@@ -1456,7 +1476,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif state == 'awaiting_game':
-        if text.lower() in ["cpm1", "cpm2"]:
+        if text and text.lower() in ["cpm1", "cpm2"]:
             sess['game'] = text.lower()
             sess['state'] = 'awaiting_email'
             game_name = "CPM1" if sess['game'] == "cpm1" else "CPM2"
@@ -1501,13 +1521,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif state == 'logged_in':
-        if text.lower() == "changemail":
+        if text and text.lower() == "changemail":
             sess['state'] = 'awaiting_new_email'
             await reply_custom(update, "✉️ CPM1/2 Login Changer:\nEnter your new email address:", context)
-        elif text.lower() == "changepass":
+        elif text and text.lower() == "changepass":
             sess['state'] = 'awaiting_new_password'
             await reply_custom(update, "🔑 CPM1/2 Login Changer:\nEnter your new password:", context)
-        elif text.lower() == "logout":
+        elif text and text.lower() == "logout":
             sessions.pop(user_id, None)
             await reply_custom(update,
                 "🚪 Logged out successfully.\n\n"
@@ -1591,7 +1611,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     else:
-        await reply_custom(update, "❌ Unknown state. Please use /start to begin.", context)
+        # Ignore unknown messages para hindi ma-stuck
+        pass
 
 # ============================================================
 # ✅ BULK TYPE
@@ -1661,13 +1682,10 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, message_handler))
 
     print("="*50)
-    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL OPTIMIZED")
-    print("📌 ALL CUSTOM EMOJIS FROM GIVEAWAY BOT")
-    print("📌 Background bulk processing with /continue")
-    print("📌 Admin commands work during bulk")
-    print("📌 Optimized /download_logs and /backup_now")
-    print("📌 Admin: /addtrial, /removetrial, /triallist")
-    print("📌 Users: /dashboard")
+    print("🤖 MARK CPM1/2 CHANGER BOT - FIXED")
+    print("📌 Fixed: Hindi na stuck sa loading")
+    print("📌 Original credentials intact - hindi pinalitan")
+    print("📌 May Loading message pa rin")
     print("="*50)
 
     loop.run_until_complete(app.initialize())
