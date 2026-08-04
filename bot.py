@@ -1511,7 +1511,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sessions.pop(user_id, None)
             await reply_custom(update,
                 "🚪 Logged out successfully.\n\n"
-                "🎮 MARK MWHEHEHE Change Tool Bot 🎮\n"
+                "🎮 MARK MWHEHEHE 💨 Change Tool Bot 🎮\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "You are not logged in.\n\n"
                 "Available Options:\n"
