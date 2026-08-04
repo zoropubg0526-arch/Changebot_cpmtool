@@ -1,12 +1,15 @@
-import json, time, re, os, random as rnd, asyncio, aiohttp, logging, sys, signal, socket, zipfile, threading, glob
+import json, time, re, os, random as rnd, asyncio, aiohttp, logging, sys, signal, socket, zipfile, threading
 from datetime import datetime, timedelta, timezone
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import Forbidden, Conflict
+from telegram.error import NetworkError, TimedOut, BadRequest
 from flask import Flask
 
+# ============================================================
+# ✅ FLASK APP (FOR PORT BINDING)
+# ============================================================
 app_flask = Flask(__name__)
 
 @app_flask.route('/')
@@ -33,7 +36,7 @@ GAME_AUTH_KEYS = {
 }
 
 # ============================================================
-# ✅ CUSTOM EMOJI MAPPING
+# ✅ CUSTOM EMOJI MAPPING (SAME AS GIVEAWAY BOT)
 # ============================================================
 CUSTOM_EMOJI_MAP = {
     '😂': '5406913184810409829', '😄': '5386587088873331829',
@@ -59,7 +62,7 @@ CUSTOM_EMOJI_MAP = {
     '⚡1': '6100277122935295595', '⚡2': '6100472578307002133',
     '⚡3': '6102404476071579522', '⚡4': '6100671388048166850',
     '⚡5': '6100278127957643014',
-    '🥵': '6307832826263768178',
+    '🥵': '6307832826263768178',  # ADMIN-ONLY
 }
 
 def get_custom_entities(text):
@@ -71,18 +74,11 @@ def get_custom_entities(text):
         if i + 1 < len(text) and text[i:i+2] == '☑️':
             ch = '☑️'
             utf16_len = 2
-            i += 2
         elif i + 1 < len(text) and text[i:i+2] == '✔️':
             ch = '✔️'
             utf16_len = 2
-            i += 2
-        elif i + 1 < len(text) and text[i:i+2] in ['⚡1', '⚡2', '⚡3', '⚡4', '⚡5']:
-            ch = text[i:i+2]
-            utf16_len = 2
-            i += 2
         else:
             utf16_len = len(ch.encode('utf-16-le')) // 2
-            i += 1
         
         if ch in CUSTOM_EMOJI_MAP:
             entities.append(MessageEntity(
@@ -92,31 +88,18 @@ def get_custom_entities(text):
                 custom_emoji_id=CUSTOM_EMOJI_MAP[ch]
             ))
         offset += utf16_len
+        i += 1 if utf16_len == 1 else 2
     return entities
 
 async def send_custom(chat_id, text, context, reply_markup=None):
     entities = get_custom_entities(text)
-    try:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=None,
-            entities=entities if entities else None
-        )
-    except Forbidden:
-        pass
-    except Exception as e:
-        print(f"⚠️ Custom emoji error: {e}")
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup,
-                parse_mode=None
-            )
-        except:
-            pass
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=reply_markup,
+        parse_mode=None,
+        entities=entities if entities else None
+    )
 
 async def reply_custom(update, text, context, reply_markup=None):
     await send_custom(update.effective_chat.id, text, context, reply_markup)
@@ -130,14 +113,24 @@ async def edit_custom(query, text, reply_markup=None):
             parse_mode=None,
             entities=entities if entities else None
         )
-    except:
-        try:
-            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
-        except:
+    except Exception as e:
+        if "Message is not modified" in str(e):
             pass
+        else:
+            try:
+                await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=None)
+            except:
+                pass
 
 # ============================================================
-# ✅ FIREBASE HELPERS
+# ✅ LOGGING
+# ============================================================
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+
+# ============================================================
+# ✅ FIREBASE HELPERS (OPTIMIZED)
 # ============================================================
 def db_put(path, data):
     url = f"{DB_URL}/{path}.json?auth={FIREBASE_API_KEY}"
@@ -317,7 +310,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id == ADMIN_ID:
         all_users = db_get("users") or {}
-        msg = "👑 ADMIN DASHBOARD 🔥\n━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg = "👑 ADMIN DASHBOARD 🥵\n━━━━━━━━━━━━━━━━━━━━━\n\n"
         count = 0
         for uid, info in all_users.items():
             if count >= 20:
@@ -397,39 +390,6 @@ def had_key(user_id):
     data = db_get(f"keys/{user_id}")
     return data is not None
 
-def has_trial(user_id):
-    trial = db_get(f"trials/{user_id}")
-    if trial:
-        expiry_str = trial.get("expiry")
-        if expiry_str:
-            expiry = datetime.fromisoformat(expiry_str)
-            if datetime.now(timezone.utc) < expiry:
-                return True
-    return False
-
-def has_full_access(user_id):
-    if user_id == ADMIN_ID:
-        return True
-    
-    if has_trial(user_id):
-        return False
-    
-    key_data = db_get(f"keys/{user_id}")
-    if not key_data:
-        return False
-    
-    tier = key_data.get("tier", "")
-    if tier == "1week":
-        return False
-    
-    expiry_str = key_data.get("expiry")
-    if expiry_str:
-        expiry = datetime.fromisoformat(expiry_str)
-        if datetime.now(timezone.utc) >= expiry:
-            return False
-    
-    return True
-
 # ============================================================
 # ✅ TRIAL SYSTEM
 # ============================================================
@@ -467,42 +427,13 @@ def get_trial(user_id):
         return None
     return expiry
 
+def has_trial(user_id):
+    return get_trial(user_id) is not None
+
 def has_access(user_id):
     if get_key(user_id): return True
     if has_trial(user_id): return True
     return False
-
-# ============================================================
-# ✅ CPM1 TOOL INSTRUCTION
-# ============================================================
-CPM1_INSTRUCTION = (
-    "🚘 **CPM1 TOOL – UNLOCK ALL CARS & INJECT** 🚘\n"
-    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    "⚡ **Unlock All Cars**\n"
-    "📌 This feature unlocks **ALL** cars from your `all-cars/` folder into your account.\n"
-    "📌 **Requirements:**\n"
-    "  ✅ Your account must have **at least 1 car** in the garage (blueprint).\n"
-    "  ✅ You need **enough in-game money** (approx. 100 per car).\n"
-    "  ✅ You must have **opened the account in the game** at least once.\n"
-    "  ✅ The account must have **available world sale slots**.\n\n"
-    "🔥 **How it works:**\n"
-    "  • The bot logs into your account.\n"
-    "  • It takes your best car as a blueprint.\n"
-    "  • It scans the world sale for available slots.\n"
-    "  • It buys cars using your in-game money.\n"
-    "  • You'll receive progress updates every 10 cars.\n\n"
-    "💉 **Inject Car**\n"
-    "📌 Injects a **specific car ID** into your account.\n"
-    "📌 **Requirements:**\n"
-    "  ✅ Car ID must exist in the game.\n"
-    "  ✅ You need an available world sale slot.\n"
-    "  ✅ Your account must have at least 1 car as blueprint.\n\n"
-    "⚠️ **Important:**\n"
-    "  • This tool is **ONLY for full-access users** (not trial, not 1-week).\n"
-    "  • Do not spam the buttons – the process runs in the background.\n"
-    "  • If you encounter errors, check your account first.\n\n"
-    "👇 **Select an action below:**"
-)
 
 # ============================================================
 # ✅ NOTIFICATION
@@ -540,7 +471,7 @@ async def send_activation_notification(context, user_id, activation_type, plan_o
     try:
         await send_custom(chat_id=user_id, text=msg, context=context)
     except Exception as e:
-        print(f"⚠️ Could not send notification to {user_id}: {e}")
+        print(f"⚠️ Could not send notification: {e}")
 
 # ============================================================
 # ✅ SYNC AUTH
@@ -632,323 +563,6 @@ sessions = {}
 bulk_tasks = {}
 
 # ============================================================
-# ✅ CPM1 TOOL FUNCTIONS (FIXED WITH LOGGING & FALLBACK)
-# ============================================================
-ALL_CARS_DIR = 'all-cars'
-
-def load_all_cars():
-    cars = []
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    cars_dir = os.path.join(base_dir, ALL_CARS_DIR)
-    
-    # First, try the dedicated folder
-    if os.path.exists(cars_dir):
-        files = glob.glob(f'{cars_dir}/*.json')
-        print(f"📁 Found {len(files)} JSON files in {cars_dir}")
-        for filepath in sorted(files):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    car = json.load(f)
-                    cars.append(car)
-            except Exception as e:
-                print(f"⚠️ Error loading {filepath}: {e}")
-    else:
-        print(f"⚠️ {cars_dir} folder not found, checking root for .json files...")
-        # Fallback: look for .json files in root
-        root_files = glob.glob('*.json')
-        if root_files:
-            print(f"📁 Found {len(root_files)} JSON files in root")
-            for filepath in sorted(root_files):
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        car = json.load(f)
-                        cars.append(car)
-                except Exception as e:
-                    print(f"⚠️ Error loading {filepath}: {e}")
-        else:
-            print("⚠️ No JSON files found anywhere!")
-    
-    print(f"✅ Loaded {len(cars)} car files")
-    return cars
-
-async def login_async(session, e, p):
-    K = 'AIzaSyBW1ZbMiUeDZHYUO2bY8Bfnf5rRgrQGPTM'
-    FB = 'https://www.googleapis.com/identitytoolkit/v3/relyingparty'
-    for url in [f'{FB}/verifyPassword', f'{FB}/signupNewUser']:
-        try:
-            async with session.post(url, params={'key': K}, json={
-                'email': e, 'password': p, 'returnSecureToken': True
-            }, timeout=aiohttp.ClientTimeout(total=12)) as r:
-                d = await r.json()
-                if d.get('idToken'):
-                    return d['idToken'], d['localId']
-        except:
-            continue
-    return None, None
-
-async def api_async(session, tok, ep, data, timeout=8):
-    EU = 'https://europe-west1-cp-multiplayer.cloudfunctions.net'
-    h = {'Content-Type': 'application/json', 'Authorization': f'Bearer {tok}'}
-    try:
-        async with session.post(f'{EU}/{ep}', json={'data': data}, headers=h,
-                               timeout=aiohttp.ClientTimeout(total=timeout)) as r:
-            text = await r.text()
-            if r.status != 200:
-                print(f"⚠️ API {ep} returned {r.status}: {text[:200]}")
-            return r.status, text
-    except Exception as e:
-        print(f"⚠️ API {ep} error: {e}")
-        return 500, ''
-
-async def get_world_sale_slots_fast(session, tok):
-    status, text = await api_async(session, tok, 'WSGetCarListV3', 20, timeout=5)
-    if status != 200:
-        print(f"⚠️ Failed to get slots: status {status}")
-        return []
-    try:
-        response_data = json.loads(text)
-        if 'result' in response_data:
-            lst = json.loads(response_data['result'])
-            if lst:
-                print(f"✅ Got {len(lst)} slots from world sale")
-                return lst
-            else:
-                print("⚠️ No slots in response (empty list)")
-        else:
-            print(f"⚠️ No 'result' key in response: {response_data}")
-    except Exception as e:
-        print(f"⚠️ Error parsing slots: {e}")
-    return []
-
-async def buy_car_from_slot(session, tok, slot, car):
-    payload = {
-        "ownerID": slot.get('ownerID', ''),
-        "ownerName": slot.get('ownerName', ''),
-        "description": slot.get('description', ''),
-        "CarID": slot.get('carID', 0),
-        "carGeneratedID": slot.get('carGeneratedID', ''),
-        "ownerAccountID": slot.get('ownerAccountID', ''),
-        "oneCar": car,
-        "vynilOneCar": car.get('Vynils', {}),
-        "loadedLocalCar": {"instanceID": random.randint(-999999, -100000)},
-        "price": slot.get('price', 100),
-        "SellingCar": {},
-        "willReject": False,
-        "dislike": 1,
-        "like": 0,
-        "liked": False,
-        "disliked": False,
-        "mode": 1,
-    }
-    status, text = await api_async(session, tok, 'WSPurchaseCarV3', json.dumps(payload), timeout=6)
-    if status != 200:
-        print(f"⚠️ Purchase failed: status {status}")
-        return False
-    try:
-        return json.loads(text).get('result') == 1
-    except:
-        return False
-
-async def cpm1_unlock_async(email, pwd, progress_callback=None):
-    all_cars = load_all_cars()
-    if not all_cars:
-        return {"success": False, "message": "❌ No car files found. Upload JSON files in all-cars/ folder."}
-
-    cfg = {"batch_size": 20, "concurrency": 30, "buy_delay": 0.1, "slot_wait": 0.5}
-    min_price = 0
-    max_price = 10000
-    total_cars = len(all_cars)
-    max_time = 300  # 5 minutes timeout
-    start_time = time.time()
-    last_progress_time = start_time
-
-    connector = aiohttp.TCPConnector(limit=cfg["concurrency"], limit_per_host=cfg["concurrency"])
-    async with aiohttp.ClientSession(connector=connector) as session:
-        if progress_callback:
-            await progress_callback(0, total_cars, 0, 0, "⏳ Authenticating...")
-        tok, uid = await login_async(session, email, pwd)
-        if not tok:
-            return {"success": False, "message": "❌ Authentication failed. Check your credentials."}
-
-        total_unlocked = 0
-        total_spent = 0
-        car_index = 0
-        unlocked_ids = set()
-        last_progress = 0
-        no_slot_count = 0
-        no_progress_count = 0
-
-        if progress_callback:
-            await progress_callback(0, total_cars, 0, 0, "⏳ Looking for world sale slots...")
-
-        while total_unlocked < total_cars:
-            # Check timeout
-            if time.time() - start_time > max_time:
-                return {
-                    "success": False, 
-                    "message": f"⏰ Timeout after {max_time}s. Unlocked {total_unlocked}/{total_cars} cars. Check if world sale has available slots or if account has enough money."
-                }
-
-            slots = await get_world_sale_slots_fast(session, tok)
-            if not slots:
-                no_slot_count += 1
-                if no_slot_count % 10 == 0 and progress_callback:
-                    await progress_callback(
-                        total_unlocked, total_cars, total_spent, 0,
-                        f"⏳ Waiting for slots... ({no_slot_count*cfg['slot_wait']:.1f}s) - No cars for sale right now"
-                    )
-                await asyncio.sleep(cfg["slot_wait"])
-                continue
-            else:
-                no_slot_count = 0
-
-            valid_slots = []
-            for slot in slots:
-                slot_id = slot.get('carID', 0)
-                slot_price = slot.get('price', 0)
-                if slot_id in unlocked_ids:
-                    continue
-                if slot_price < min_price or slot_price > max_price:
-                    continue
-                valid_slots.append(slot)
-
-            if not valid_slots:
-                if progress_callback:
-                    await progress_callback(
-                        total_unlocked, total_cars, total_spent, 0,
-                        f"⏳ No new cars in price range, checking again..."
-                    )
-                await asyncio.sleep(cfg["slot_wait"])
-                no_progress_count += 1
-                if no_progress_count > 20:  # 10 seconds no progress
-                    return {
-                        "success": False,
-                        "message": f"❌ No buyable cars found after {no_progress_count*cfg['slot_wait']:.1f}s. Make sure you have enough money and world sale has cars."
-                    }
-                continue
-            else:
-                no_progress_count = 0
-
-            remaining = total_cars - total_unlocked
-            batch = valid_slots[:min(cfg["batch_size"], remaining)]
-
-            tasks = []
-            for slot in batch:
-                car = all_cars[car_index % total_cars]
-                car_index += 1
-                new_car = json.loads(json.dumps(car))
-                slot_id = slot.get('carID', 0)
-                new_car['CarID'] = slot_id
-                if 'texts' in new_car:
-                    texts = new_car['texts']
-                    if isinstance(texts, str):
-                        texts = [texts, '', '']
-                    while len(texts) <= 2:
-                        texts.append('')
-                    texts[2] = f'{uid[:8].upper()}_{slot_id}_HZ'
-                    new_car['texts'] = texts
-                if 'Vynils' in new_car and isinstance(new_car['Vynils'], dict):
-                    new_car['Vynils']['CarID'] = slot_id
-                tasks.append(buy_car_from_slot(session, tok, slot, new_car))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            batch_unlocked = 0
-            batch_spent = 0
-            for i, result in enumerate(results):
-                if result is True:
-                    batch_unlocked += 1
-                    batch_spent += batch[i].get('price', 0)
-                    unlocked_ids.add(batch[i].get('carID', 0))
-
-            total_unlocked += batch_unlocked
-            total_spent += batch_spent
-
-            if total_unlocked > last_progress or total_unlocked >= total_cars:
-                elapsed = time.time() - start_time
-                speed = total_unlocked / elapsed if elapsed > 0 else 0
-                if progress_callback:
-                    await progress_callback(
-                        total_unlocked, total_cars, total_spent, speed,
-                        f"🚀 {total_unlocked}/{total_cars} cars"
-                    )
-                last_progress = total_unlocked
-                last_progress_time = time.time()
-
-            if total_unlocked >= total_cars:
-                break
-
-            await asyncio.sleep(cfg["buy_delay"])
-
-        elapsed = time.time() - start_time
-        return {
-            "success": True,
-            "unlocked": total_unlocked,
-            "total": total_cars,
-            "spent": total_spent,
-            "time": elapsed,
-            "speed": total_unlocked / elapsed if elapsed > 0 else 0
-        }
-
-async def cpm1_inject_async(email, pwd, cid):
-    connector = aiohttp.TCPConnector(limit=20)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tok, uid = await login_async(session, email, pwd)
-        if not tok:
-            return {"success": False, "message": "Authentication failed"}
-        
-        _, t = await api_async(session, tok, 'GetAllCars2', None, timeout=8)
-        try:
-            response_data = json.loads(t)
-            if 'result' not in response_data:
-                return {"success": False, "message": "Cannot get cars"}
-            cars = json.loads(response_data['result'])
-        except:
-            return {"success": False, "message": "Parse error"}
-        
-        if not cars:
-            return {"success": False, "message": "No cars available"}
-        
-        tpl = max(cars, key=lambda c: c.get('CarID', 0))
-        car = json.loads(json.dumps(tpl))
-        if 'CarID' not in car:
-            return {"success": False, "message": "Invalid car structure"}
-        
-        car['CarID'] = cid
-        try:
-            if 'texts' in car:
-                texts = car['texts']
-                if isinstance(texts, str):
-                    car['texts'] = [texts, '', '']
-                    texts = car['texts']
-                elif not isinstance(texts, list):
-                    pass
-                else:
-                    while len(texts) <= 2:
-                        texts.append('')
-                    car['texts'][2] = f'{uid[:8].upper()}_{cid}_HZ'
-        except:
-            pass
-        
-        try:
-            if 'Vynils' in car and isinstance(car['Vynils'], dict):
-                car['Vynils']['CarID'] = cid
-        except:
-            pass
-        
-        slots = await get_world_sale_slots_fast(session, tok)
-        if not slots:
-            return {"success": False, "message": "No slots available"}
-        
-        w = slots[0]
-        success = await buy_car_from_slot(session, tok, w, car)
-        
-        if not success:
-            return {"success": False, "message": "Injection rejected"}
-        
-        return {"success": True, "car_id": cid}
-
-# ============================================================
 # ✅ ADMIN COMMANDS
 # ============================================================
 async def addtrial_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1025,6 +639,7 @@ async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
         return
     
+    # Check if there's a paused bulk task
     task_info = bulk_tasks.get(user_id)
     if not task_info:
         await reply_custom(update, "📭 No paused bulk change found.", context)
@@ -1038,13 +653,18 @@ async def continue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_custom(update, "✅ Bulk change already completed.", context)
         return
     
+    # Resume the bulk change
     await reply_custom(update, "🔄 Resuming bulk change...", context)
+    
+    # Get the stored data
     sessions[user_id] = task_info.get('session_data', {})
     sessions[user_id]['state'] = 'awaiting_bulk_new_value'
+    
+    # Trigger the bulk processing again
     asyncio.create_task(process_bulk_change(update, context, resume=True))
 
 # ============================================================
-# ✅ BACKUP FUNCTIONS
+# ✅ BACKUP FUNCTIONS (OPTIMIZED)
 # ============================================================
 async def backup_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1053,20 +673,23 @@ async def backup_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     await reply_custom(update, "⏳ Creating backup... 📁", context)
     await send_backup_to_admin(context.bot, "📦 Manual Backup")
-    await reply_custom(update, "✅ Backup sent! Check your DMs. 🔥", context)
+    await reply_custom(update, "✅ Backup sent! Check your DMs. 🥵", context)
 
 async def send_backup_to_admin(bot, title="📦 Manual Backup"):
     try:
         cloud_logs = db_get("logs", limit=5000) or {}
         backup_filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        
         with open(backup_filename, "w", encoding="utf-8") as f:
             json.dump(cloud_logs, f, indent=2, ensure_ascii=False)
+        
         with open(backup_filename, "rb") as f:
             await bot.send_document(
                 chat_id=ADMIN_ID,
                 document=f,
                 caption=f"{title}\n📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n✅ All logs from Firebase (last 5000 entries)."
             )
+        
         local_files = [
             CREDENTIALS_BACKUP_CPM1,
             CREDENTIALS_BACKUP_CPM2,
@@ -1081,13 +704,14 @@ async def send_backup_to_admin(bot, title="📦 Manual Backup"):
                         document=f,
                         caption=f"📎 {filename} (local backup)"
                     )
+        
         os.remove(backup_filename)
         print(f"✅ Backup sent to admin at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     except Exception as e:
         print(f"❌ Backup failed: {e}")
 
 # ============================================================
-# ✅ DOWNLOAD LOGS
+# ✅ DOWNLOAD LOGS (OPTIMIZED)
 # ============================================================
 async def download_logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1095,19 +719,23 @@ async def download_logs_command(update: Update, context: ContextTypes.DEFAULT_TY
         await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
         return
     await reply_custom(update, "⏳ Fetching logs from cloud... 📊", context)
+    
     cloud_logs = db_get("logs", limit=1000) or {}
     if not cloud_logs:
         await reply_custom(update, "📭 No logs found in cloud.", context)
         return
+    
     total_credentials = len(cloud_logs.get("credentials", {}))
     total_changes = len(cloud_logs.get("changes", {}))
     total_keys = len(cloud_logs.get("keys", {}))
+    
     last_entries = []
     if cloud_logs.get("credentials"):
         for key, val in list(cloud_logs["credentials"].items())[-10:]:
             last_entries.append(f"📧 {val.get('email', 'N/A')} - {val.get('timestamp', 'N/A')[:19]}")
+    
     summary = (
-        f"📊 CLOUD LOGS SUMMARY 🔥\n"
+        f"📊 CLOUD LOGS SUMMARY 🥵\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📝 Credentials: {total_credentials}\n"
         f"🔄 Changes: {total_changes}\n"
@@ -1115,10 +743,13 @@ async def download_logs_command(update: Update, context: ContextTypes.DEFAULT_TY
         f"📅 Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         f"📋 Last 10 changes:\n"
     )
+    
     for entry in last_entries[:5]:
         summary += f"  • {entry}\n"
+    
     if total_credentials > 10:
         summary += f"\n  ... and {total_credentials - 10} more\n"
+    
     summary += f"\n💾 Use /backup_now to download full backup."
     await reply_custom(update, summary, context)
 
@@ -1174,82 +805,67 @@ async def admin_decision_handler(update: Update, context: ContextTypes.DEFAULT_T
 # ============================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    await reply_custom(update, "⏳ Loading... 🔄", context)
 
-    try:
-        await send_custom(chat_id, "⏳ Loading... 🔄", context)
-
-        if user_id == ADMIN_ID:
-            caption = "👑 Welcome, Admin! 🔥\nWhat would you like to do?"
-            keyboard = [
-                [InlineKeyboardButton("🔄 Single Change", callback_data="single_change")],
-                [InlineKeyboardButton("📦 Bulk Change", callback_data="bulk_change_start")],
-                [InlineKeyboardButton("🚘 CPM1 Tool", callback_data="cpm1_tool")],
-                [InlineKeyboardButton("🛠️ Admin Panel", callback_data="admin_panel")],
-            ]
-            await send_custom(chat_id, caption, context, reply_markup=InlineKeyboardMarkup(keyboard))
-            return
-
-        maint = get_maintenance()
-        if maint.get("active"):
-            await send_custom(chat_id, maint.get("message"), context)
-            return
-
-        if not has_access(user_id):
-            if had_key(user_id):
-                msg = (
-                    "⌛️ YOUR KEY HAS EXPIRED! ⌛️\n\n"
-                    "🛑 Your access to the Change Email/Password Bot has ended.\n"
-                    "🔥 Don't miss out – renew your key now!\n\n"
-                    "📲 Contact @Maarkryan to buy a new key!\n"
-                    "💸 Thanks for your support! 💸"
-                )
-                await send_custom(chat_id, msg, context)
-            else:
-                if has_used_first_trial(user_id):
-                    msg = (
-                        "🔒 FREE TRIAL ALREADY USED 🔒\n\n"
-                        "You have already used your 1 free trial for this bot.\n\n"
-                        "💳 BUY A KEY:\n"
-                        "Contact @Maarkryan to purchase a key.\n\n"
-                        "📌 MARK CPM1/2 CHANGER TOOL"
-                    )
-                    await send_custom(chat_id, msg, context)
-                else:
-                    msg = (
-                        "🎁 FREE 30-MINUTE TRIAL! 🎁\n\n"
-                        "You are eligible for a one-time free trial!\n\n"
-                        "⚡ What you can test:\n"
-                        "✅ Change emails & passwords (single & bulk)\n"
-                        "✅ Real-time processing\n"
-                        "✅ 30 minutes of full access\n\n"
-                        "⏳ This is a 1-time trial – use it wisely!\n\n"
-                        "👇 Click below to start your free trial now!"
-                    )
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton("🎁 START FREE TRIAL", callback_data="start_free_trial")],
-                        [InlineKeyboardButton("💬 Contact Admin", callback_data="msg_admin")],
-                    ])
-                    await send_custom(chat_id, msg, context, reply_markup=keyboard)
-            return
-
-        caption = "🎮 Choose your mode:"
+    if user_id == ADMIN_ID:
+        caption = "👑 Welcome, Admin! 🥵\nWhat would you like to do?"
         keyboard = [
             [InlineKeyboardButton("🔄 Single Change", callback_data="single_change")],
             [InlineKeyboardButton("📦 Bulk Change", callback_data="bulk_change_start")],
+            [InlineKeyboardButton("🛠️ Admin Panel", callback_data="admin_panel")],
         ]
-        await send_custom(chat_id, caption, context, reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    except Exception as e:
-        print(f"⚠️ Error in start handler: {e}")
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ An error occurred. Please try again later.",
-                parse_mode=None
+        await send_custom(chat_id=update.effective_chat.id, text=caption, context=context, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    maint = get_maintenance()
+    if maint.get("active"):
+        await send_custom(chat_id=update.effective_chat.id, text=maint.get("message"), context=context)
+        return
+
+    if not has_access(user_id):
+        if had_key(user_id):
+            msg = (
+                "⌛️ YOUR KEY HAS EXPIRED! ⌛️\n\n"
+                "🛑 Your access to the Change Email/Password Bot has ended.\n"
+                "🔥 Don't miss out – renew your key now to keep changing emails & passwords!\n\n"
+                "📲 Contact @Maarkryan to buy a new key!\n"
+                "💸 Thanks for your support! 💸"
             )
-        except:
-            pass
+            await send_custom(chat_id=update.effective_chat.id, text=msg, context=context)
+        else:
+            if has_used_first_trial(user_id):
+                msg = (
+                    "🔒 FREE TRIAL ALREADY USED 🔒\n\n"
+                    "You have already used your 1 free trial for this bot.\n\n"
+                    "💳 BUY A KEY:\n"
+                    "Contact @Maarkryan to purchase a key.\n\n"
+                    "📌 MARK CPM1/2 CHANGER TOOL"
+                )
+                await send_custom(chat_id=update.effective_chat.id, text=msg, context=context)
+            else:
+                msg = (
+                    "🎁 FREE 30-MINUTE TRIAL! 🎁\n\n"
+                    "You are eligible for a one-time free trial of the CPM1/2 Changer Tool!\n\n"
+                    "⚡ What you can test:\n"
+                    "✅ Change emails & passwords (single & bulk)\n"
+                    "✅ Real-time processing\n"
+                    "✅ 30 minutes of full access\n\n"
+                    "⏳ This is a 1-time trial – use it wisely!\n\n"
+                    "👉 Click below to start your free trial now!"
+                )
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton("🎁 START FREE TRIAL", callback_data="start_free_trial")],
+                    [InlineKeyboardButton("💬 Contact Admin", callback_data="msg_admin")],
+                ])
+                await send_custom(chat_id=update.effective_chat.id, text=msg, context=context, reply_markup=keyboard)
+        return
+
+    caption = "🎮 Choose your mode:"
+    keyboard = [
+        [InlineKeyboardButton("🔄 Single Change", callback_data="single_change")],
+        [InlineKeyboardButton("📦 Bulk Change", callback_data="bulk_change_start")],
+    ]
+    await send_custom(chat_id=update.effective_chat.id, text=caption, context=context, reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ============================================================
 # ✅ FREE TRIAL CALLBACK
@@ -1327,41 +943,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def edit_message(text, reply_markup=None):
         await edit_custom(query, text, reply_markup)
 
-    # ===== CPM1 TOOL =====
-    if data == "cpm1_tool":
-        if user_id != ADMIN_ID and not has_full_access(user_id):
-            await edit_message(
-                "⛔ **ACCESS DENIED** ⛔\n\n"
-                "This tool is **ONLY for full-access users**.\n"
-                "❌ Trial and 1-week key users cannot use this feature.\n\n"
-                "💳 Upgrade to a higher plan to unlock this tool.\n"
-                "👤 Contact @Maarkryan for more details."
-            )
-            return
-        await edit_message(CPM1_INSTRUCTION, InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔓 Unlock All Cars", callback_data="cpm1_unlock")],
-            [InlineKeyboardButton("💉 Inject Car", callback_data="cpm1_inject")],
-            [InlineKeyboardButton("🔙 Back to Admin", callback_data="admin_back")],
-        ]))
-        return
-
-    if data == "cpm1_unlock":
-        if user_id != ADMIN_ID and not has_full_access(user_id):
-            await edit_message("⛔ Access denied. Full access only. ❌⚠️")
-            return
-        await edit_message("📧 Enter email and password (format: email:password)")
-        context.user_data['cpm1_action'] = 'unlock'
-        return
-
-    if data == "cpm1_inject":
-        if user_id != ADMIN_ID and not has_full_access(user_id):
-            await edit_message("⛔ Access denied. Full access only. ❌⚠️")
-            return
-        await edit_message("📧 Enter email:password:carID (format: email:password:123)")
-        context.user_data['cpm1_action'] = 'inject'
-        return
-
-    # ===== ADMIN PANEL =====
     if data == "admin_panel":
         if user_id != ADMIN_ID: return
         keyboard = [
@@ -1372,7 +953,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🛠️ MAINTENANCE", callback_data="toggle_maintenance")],
             [InlineKeyboardButton("🔙 Back", callback_data="start_back")],
         ]
-        await edit_message("👑 ADMIN PANEL 🔥", InlineKeyboardMarkup(keyboard))
+        await edit_message("👑 ADMIN PANEL 🥵", InlineKeyboardMarkup(keyboard))
         return
 
     if data == "download_logs":
@@ -1466,10 +1047,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
         return
 
-    elif data == "admin_back":
-        await start(update, context)
-        return
-
     elif data == "activate_key":
         await edit_message("Send the key type: 1week, 7weeks, 1month, 3months, 6months")
         context.user_data['awaiting_key'] = True
@@ -1506,12 +1083,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 # ============================================================
-# ✅ PROCESS BULK CHANGE
+# ✅ PROCESS BULK CHANGE (ASYNC BACKGROUND)
 # ============================================================
 async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE, resume=False):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
+    # Get session data
     if resume:
         sess = sessions.get(user_id, {})
         task_info = bulk_tasks.get(user_id, {})
@@ -1546,6 +1124,7 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     chunks = list(chunk_list(all_accounts, CHUNK_SIZE))
     total_chunks = len(chunks)
     
+    # Store task info
     bulk_tasks[user_id] = {
         'status': 'running',
         'all_accounts': all_accounts,
@@ -1566,9 +1145,6 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
             try:
                 await reply_custom(update, text, context)
                 return
-            except Forbidden:
-                print(f"⚠️ Bot blocked by user {update.effective_user.id}")
-                return
             except:
                 if attempt < retries - 1:
                     await asyncio.sleep(2)
@@ -1577,6 +1153,7 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     for idx in range(current_chunk, total_chunks):
         chunk = chunks[idx]
+        # Update progress
         bulk_tasks[user_id]['current_chunk'] = idx + 1
         
         await safe_reply(f"🔄 Processing chunk {idx + 1}/{total_chunks} ({len(chunk)} accounts)...")
@@ -1612,6 +1189,7 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
             total_success += chunk_success
             total_failed += chunk_failed
             
+            # Update stored progress
             bulk_tasks[user_id]['all_output_creds'] = all_output_creds
             bulk_tasks[user_id]['total_success'] = total_success
             bulk_tasks[user_id]['total_failed'] = total_failed
@@ -1622,6 +1200,7 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
             print(f"❌ Chunk {idx + 1} error: {e}")
             await safe_reply(f"⚠️ Chunk {idx + 1} encountered an error, continuing...")
     
+    # Mark as completed
     bulk_tasks[user_id]['status'] = 'completed'
     
     await safe_reply(f"✅ Bulk change completed!\nTotal accounts: {total_accounts}\nSuccessful: {total_success}\nFailed: {total_failed}")
@@ -1642,9 +1221,6 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
                         caption=f"📎 Updated accounts (Batch #{batch_num}, Part {i}/{len(output_chunks)})"
                     )
                 os.remove(filename)
-            except Forbidden:
-                print(f"⚠️ Bot blocked by user {user_id}")
-                pass
             except Exception as e:
                 print(f"❌ Failed to send file: {e}")
         
@@ -1655,6 +1231,7 @@ async def process_bulk_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await safe_reply("⚠️ No accounts were updated. Check console for error details.")
     
+    # Clean up
     sessions.pop(user_id, None)
     bulk_tasks.pop(user_id, None)
 
@@ -1726,104 +1303,10 @@ def chunk_list(lst, chunk_size):
         yield lst[i:i+chunk_size]
 
 # ============================================================
-# ✅ CPM1 TOOL PROCESS HANDLER
-# ============================================================
-async def cpm1_process_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
-    
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
-        return
-    
-    text = update.message.text.strip()
-    action = context.user_data.get('cpm1_action')
-    
-    if not action:
-        return
-    
-    try:
-        if action == 'unlock':
-            parts = text.split(':')
-            if len(parts) != 2:
-                await reply_custom(update, "❌ Invalid format. Use: email:password", context)
-                return
-            email, pwd = parts[0].strip(), parts[1].strip()
-            
-            await reply_custom(update, f"⏳ Starting unlock all cars for {email}...", context)
-            
-            async def progress_callback(unlocked, total, spent, speed, status):
-                try:
-                    await reply_custom(
-                        update,
-                        f"📊 Unlocked {unlocked}/{total} cars\n"
-                        f"💰 Spent: ${spent:,}\n"
-                        f"⚡ Speed: {speed:.1f} cars/sec\n"
-                        f"⏳ Status: {status}",
-                        context
-                    )
-                except Forbidden:
-                    print(f"⚠️ Bot blocked by user {user_id}")
-                    pass
-                except:
-                    pass
-            
-            result = await cpm1_unlock_async(email, pwd, progress_callback)
-            
-            if result["success"]:
-                msg = (
-                    f"✅ UNLOCK COMPLETE! 🚀\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📧 Account: {email}\n"
-                    f"🚗 Unlocked: {result['unlocked']}/{result['total']}\n"
-                    f"💰 Spent: ${result['spent']:,}\n"
-                    f"⏳ Time: {result['time']:.1f}s\n"
-                    f"⚡ Speed: {result['speed']:.1f} cars/sec\n\n"
-                    f"👑 All cars unlocked successfully! 🔥"
-                )
-                await reply_custom(update, msg, context)
-            else:
-                await reply_custom(update, f"❌ Failed: {result['message']}", context)
-            
-            context.user_data.pop('cpm1_action', None)
-            
-        elif action == 'inject':
-            parts = text.split(':')
-            if len(parts) != 3:
-                await reply_custom(update, "❌ Invalid format. Use: email:password:carID", context)
-                return
-            email, pwd, cid_str = parts[0].strip(), parts[1].strip(), parts[2].strip()
-            cid = int(cid_str)
-            
-            await reply_custom(update, f"⏳ Injecting car #{cid} into {email}...", context)
-            
-            result = await cpm1_inject_async(email, pwd, cid)
-            
-            if result["success"]:
-                msg = (
-                    f"✅ INJECTION COMPLETE! 💉\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"📧 Account: {email}\n"
-                    f"🚗 Car ID: #{result['car_id']}\n\n"
-                    f"👑 Car injected successfully! 🔥"
-                )
-                await reply_custom(update, msg, context)
-            else:
-                await reply_custom(update, f"❌ Failed: {result['message']}", context)
-            
-            context.user_data.pop('cpm1_action', None)
-    except Forbidden:
-        print(f"⚠️ Bot blocked by user {user_id}")
-        context.user_data.pop('cpm1_action', None)
-    except Exception as e:
-        await reply_custom(update, f"❌ Error: {str(e)}", context)
-        context.user_data.pop('cpm1_action', None)
-
-# ============================================================
 # ✅ MESSAGE HANDLER
 # ============================================================
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if message exists
     if not update.message:
         return
     
@@ -1915,11 +1398,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== CPM1 TOOL INPUT =====
-    if user_id == ADMIN_ID and context.user_data.get('cpm1_action'):
-        await cpm1_process_handler(update, context)
-        return
-
     # ===== SESSION FLOWS =====
     if user_id not in sessions:
         sessions[user_id] = {'state': 'logged_out'}
@@ -1956,7 +1434,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif state == 'awaiting_bulk_new_value':
         new_value = text
+        # Store the new value and start background task
         sess['bulk_new_value'] = new_value
+        # Start bulk change in background
         asyncio.create_task(process_bulk_change(update, context, resume=False))
         await reply_custom(update, "✅ Bulk change started in background! 🚀\nYou can continue using other commands while it runs.\nUse /continue to check status.", context)
         return
@@ -2148,144 +1628,9 @@ async def bulk_type_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_custom(query, "❌ Invalid choice.")
 
 # ============================================================
-# ✅ ADMIN COMMANDS: /claimagain and /undermaintinance
-# ============================================================
-async def claimagain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.effective_user.id != ADMIN_ID:
-            await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
-            return
-        
-        users = db_get("users") or {}
-        if not users:
-            await reply_custom(update, "📭 No users to notify.", context)
-            return
-        
-        msg = (
-            "🎉 CLAIM AGAIN AVAILABLE! 🎉\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🔥 Good news! You can now claim another account! 🔥\n\n"
-            "⚡ Click /start and choose your prize! ⚡\n"
-            "💎 New accounts have been added! 💎\n\n"
-            "👑 Hurry up before they run out! 🚀\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💙 @Cpm_2test_bot"
-        )
-        
-        success = 0
-        failed = 0
-        for uid in users.keys():
-            try:
-                await send_custom(int(uid), msg, context)
-                success += 1
-                await asyncio.sleep(0.05)
-            except Forbidden:
-                failed += 1
-                print(f"⚠️ Bot blocked by user {uid}")
-            except Exception as e:
-                print(f"Failed to send to {uid}: {e}")
-                failed += 1
-        
-        await reply_custom(
-            update,
-            f"✅ Broadcast sent! 🥵\n📤 Success: {success}\n❌ Failed: {failed}\n💙 @Cpm_2test_bot",
-            context
-        )
-    except Exception as e:
-        print(f"⚠️ Error in claimagain_command: {e}")
-        await reply_custom(update, f"❌ Error sending broadcast: {str(e)} 🥵", context)
-
-async def undermaintinance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.effective_user.id != ADMIN_ID:
-            await reply_custom(update, "⛔ Admin only. ❌⚠️", context)
-            return
-        
-        users = db_get("users") or {}
-        if not users:
-            await reply_custom(update, "📭 No users to notify.", context)
-            return
-        
-        msg = (
-            "🛠️ UNDER MAINTENANCE ⚡5\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚠️ The bot is currently under maintenance. ⚡5\n\n"
-            "🔥 We are adding new accounts and improving the system!\n"
-            "⏳ Please wait a few minutes and try again.\n\n"
-            "💎 We apologize for the inconvenience.\n"
-            "👑 Stay tuned for more updates!\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💙 @Cpm_2test_bot"
-        )
-        
-        success = 0
-        failed = 0
-        for uid in users.keys():
-            try:
-                await send_custom(int(uid), msg, context)
-                success += 1
-                await asyncio.sleep(0.05)
-            except Forbidden:
-                failed += 1
-                print(f"⚠️ Bot blocked by user {uid}")
-            except Exception as e:
-                print(f"Failed to send to {uid}: {e}")
-                failed += 1
-        
-        await reply_custom(
-            update,
-            f"✅ Maintenance broadcast sent! 🥵\n📤 Success: {success}\n❌ Failed: {failed}\n💙 @Cpm_2test_bot",
-            context
-        )
-    except Exception as e:
-        print(f"⚠️ Error in undermaintinance_command: {e}")
-        await reply_custom(update, f"❌ Error sending maintenance: {str(e)} 🥵", context)
-
-# ============================================================
 # ✅ RUN BOT
 # ============================================================
 def run_bot():
-    # Extract all-cars.zip if exists
-    if os.path.exists('all-cars.zip'):
-        print("📦 Extracting all-cars.zip...")
-        try:
-            with zipfile.ZipFile('all-cars.zip', 'r') as zip_ref:
-                # Check if zip is valid
-                if zip_ref.testzip() is not None:
-                    print("⚠️ all-cars.zip is corrupted!")
-                else:
-                    zip_ref.extractall('.')
-                    print("✅ all-cars.zip extracted successfully!")
-                    os.remove('all-cars.zip')
-                    print("🗑️ Removed all-cars.zip")
-        except Exception as e:
-            print(f"⚠️ Failed to extract: {e}")
-    
-    # Check if all-cars folder exists after extraction
-    if os.path.exists('all-cars'):
-        files = os.listdir('all-cars')
-        print(f"📁 all-cars folder has {len(files)} files")
-        # List first 5 files
-        for f in files[:5]:
-            print(f"   - {f}")
-    else:
-        print("⚠️ all-cars folder not found! Creating empty folder...")
-        os.makedirs('all-cars', exist_ok=True)
-    
-    # Also check root for .json files
-    root_json = glob.glob('*.json')
-    if root_json:
-        print(f"📁 Found {len(root_json)} .json files in root:")
-        for f in root_json[:5]:
-            print(f"   - {f}")
-    
-    # Prevent conflict: ensure only one instance
-    try:
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM).bind(('localhost', 52345))
-    except socket.error:
-        print("⚠️ Another instance is already running. Exiting.")
-        sys.exit(1)
-    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
@@ -2299,12 +1644,6 @@ def run_bot():
 
     app = Application.builder().token(TOKEN).request(request).build()
 
-    # Stop any previous polling
-    try:
-        loop.run_until_complete(app.updater.stop())
-    except:
-        pass
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addtrial", addtrial_command))
     app.add_handler(CommandHandler("removetrial", removetrial_command))
@@ -2313,8 +1652,6 @@ def run_bot():
     app.add_handler(CommandHandler("download_logs", download_logs_command))
     app.add_handler(CommandHandler("backup_now", backup_now_command))
     app.add_handler(CommandHandler("continue", continue_command))
-    app.add_handler(CommandHandler("claimagain", claimagain_command))
-    app.add_handler(CommandHandler("undermaintinance", undermaintinance_command))
 
     app.add_handler(CallbackQueryHandler(admin_decision_handler, pattern="^(confirm_|decline_)"))
     app.add_handler(CallbackQueryHandler(bulk_game_selection_handler, pattern="^bulk_game_(cpm1|cpm2)$"))
@@ -2324,18 +1661,13 @@ def run_bot():
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, message_handler))
 
     print("="*50)
-    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL")
-    print("📌 CPM1 Tool with instructions & full emojis")
-    print("📌 Unlock All Cars with live progress updates & TIMEOUT")
-    print("📌 Full access only (no trial, no 1-week)")
+    print("🤖 MARK CPM1/2 CHANGER BOT - FINAL OPTIMIZED")
+    print("📌 ALL CUSTOM EMOJIS FROM GIVEAWAY BOT")
     print("📌 Background bulk processing with /continue")
-    print("📌 Admin: /addtrial, /removetrial, /triallist, /claimagain, /undermaintinance")
+    print("📌 Admin commands work during bulk")
+    print("📌 Optimized /download_logs and /backup_now")
+    print("📌 Admin: /addtrial, /removetrial, /triallist")
     print("📌 Users: /dashboard")
-    print("📌 ALL CUSTOM EMOJIS WORKING ✅")
-    print("📌 BLOCKED USER HANDLING ✅ (bot won't crash)")
-    print("📌 CONFLICT PREVENTION ✅ (only one instance)")
-    print("📌 TIMEOUT: 5 minutes max for unlock all cars")
-    print("📌 FALLBACK: .json files in root folder also loaded")
     print("="*50)
 
     loop.run_until_complete(app.initialize())
