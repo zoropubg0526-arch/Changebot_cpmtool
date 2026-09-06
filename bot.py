@@ -377,11 +377,11 @@ DURATIONS = {
 }
 
 PRICES = {
-    "1week": (5, 100),
-    "1month": (15, 250),
-    "7weeks": (20, 350),
-    "3months": (35, 1000),
-    "6months": (75, 2600)
+    "1week": (2, 100),
+    "1month": (4, 250),
+    "7weeks": (6, 350),
+    "3months": (17, 1000),
+    "6months": (42, 2600)
 }
 
 def add_key(user_id, key_type):
