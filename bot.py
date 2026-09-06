@@ -377,11 +377,11 @@ DURATIONS = {
 }
 
 PRICES = {
-    "1week": (5, 200),
-    "1month": (15, 550),
-    "7weeks": (20, 750),
-    "3months": (35, 2300),
-    "6months": (75, 4600)
+    "1week": (5, 100),
+    "1month": (15, 250),
+    "7weeks": (20, 350),
+    "3months": (35, 1000),
+    "6months": (75, 2600)
 }
 
 def add_key(user_id, key_type):
@@ -1409,7 +1409,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Contact @Maarkryan to request a 1 free trial for only 30 minutes!\n\n"
             "💳 WANT ANOTHER TRIAL?\n"
             "Just DM @Maarkryan again to get another trial for only:\n"
-            "⭐ 50 STARS or $3.99 for 1 hour!\n\n"
+            "⭐ 50 STARS or $1 for 1 hour!\n\n"
+            "⭐100 STARS or $3.99 for 3 hours!\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "📌 MARK CPM1/2 CHANGER TOOL",
             context
